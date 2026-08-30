@@ -34,7 +34,6 @@ doc = [
     "pydata-sphinx-theme",
     "ipykernel",
     "jupyter-sphinx",
-    "nbsphinx",
     "sphinx-favicon",
     "sphinx-codeautolink",
 ]

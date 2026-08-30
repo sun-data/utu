@@ -17,7 +17,6 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "jupyter_sphinx",
-    "nbsphinx",
     "sphinx_codeautolink",
     "sphinx_favicon",
 ]
@@ -28,15 +27,7 @@ autosummary_ignore_module_all = False
 autodoc_typehints = "description"
 
 templates_path = ["_templates"]
-# `jupyter_sphinx` leaves a notebook behind for every page it runs code
-# on, and `nbsphinx` would otherwise pick those up as pages of their own
-exclude_patterns = [
-    "_build",
-    "Thumbs.db",
-    ".DS_Store",
-    "jupyter_execute",
-    "**.ipynb_checkpoints",
-]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
@@ -68,8 +59,6 @@ intersphinx_mapping = {
 }
 
 codeautolink_custom_blocks = {"jupyter-execute": None}
-
-nbsphinx_execute = "always"
 
 
 # -- The atomic database ----------------------------------------------------
