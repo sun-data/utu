@@ -38,10 +38,28 @@ jobs:
           pip install pytest pytest-cov
           pytest --doctest-modules --junitxml=junit/test-results.xml --cov=. --cov-report=xml --cov-report=html
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           flags: unittests
           env_vars: OS,PYTHON
           name: codecov-umbrella
+
+  # A single check for the whole matrix to report through, so that the branch
+  # ruleset never has to name an operating system or a version of Python.
+  # Naming them means that changing the matrix silently blocks every pull
+  # request: a required check which no longer runs is one which never reports,
+  # and a pull request waits on it forever.
+  tests:
+    if: always()
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check whether every job in the matrix succeeded
+        run: |
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "the matrix reported '${{ needs.build.result }}'"
+            exit 1
+          fi
+          echo "every job in the matrix succeeded"
