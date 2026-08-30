@@ -40,7 +40,11 @@ def ions(
     --------
     The ions with a line in the passband of ESIS.
 
-    .. jupyter-execute::
+    Every ion with a line in the passband of ESIS, of which there are 81.
+    Not run here, since it reads the CHIANTI database, which the machine
+    building this page does not have.
+
+    .. code-block:: python
 
         import astropy.units as u
         import utu
