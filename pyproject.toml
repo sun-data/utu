@@ -19,6 +19,7 @@ dependencies = [
     "numpy",
     "astropy",
     "named-arrays~=2.8",
+    "fiasco~=0.8.2",
 ]
 dynamic = ["version"]
 
@@ -43,3 +44,6 @@ Homepage = "https://github.com/sun-data/utu"
 Documentation = "https://utu.readthedocs.io"
 
 [tool.setuptools_scm]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
