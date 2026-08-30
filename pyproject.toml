@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "utu"
+authors = [
+    {name = "Roy T. Smart", email = "roytsmart@gmail.com"},
+]
+description = "A Python library of solar physics utilities built on named arrays"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "numpy",
+    "astropy",
+    "named-arrays~=2.8",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-doctestplus",
+]
+doc = [
+    "matplotlib",
+    "graphviz",
+    "sphinx-autodoc-typehints",
+    "sphinxcontrib-bibtex",
+    "pydata-sphinx-theme",
+    "ipykernel",
+    "jupyter-sphinx",
+    "sphinx-favicon",
+]
+
+[project.urls]
+Homepage = "https://github.com/sun-data/utu"
+Documentation = "https://utu.readthedocs.io"
+
+[tool.setuptools_scm]
