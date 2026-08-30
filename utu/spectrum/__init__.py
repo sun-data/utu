@@ -5,9 +5,11 @@ from ._lines import (
     ions,
     lines,
 )
+from ._names import spectroscopic
 
 __all__ = [
     "contribution_function",
     "ions",
     "lines",
+    "spectroscopic",
 ]
