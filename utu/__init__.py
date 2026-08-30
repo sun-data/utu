@@ -1,9 +1,7 @@
-"""
-Solar physics utilities built on named arrays.
-"""
+"""Solar physics utilities built on named arrays."""
 
-from ._version import __version__
 from . import spectrum
+from ._version import __version__
 
 __all__ = [
     "__version__",

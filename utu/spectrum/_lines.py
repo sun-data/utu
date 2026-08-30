@@ -2,13 +2,12 @@
 
 import astropy.units as u
 import fiasco
+import named_arrays as na
 import numpy as np
 
-import named_arrays as na
-
 __all__ = [
-    "ions",
     "contribution_function",
+    "ions",
     "lines",
 ]
 
@@ -16,10 +15,10 @@ __all__ = [
 def ions(
     wavelength: None | u.Quantity = None,
     abundance_min: float = 1e-5,
-    **kwargs,
+    **kwargs: object,
 ) -> list[str]:
     """
-    The ions worth computing over a range of wavelengths.
+    Find the ions worth computing over a range of wavelengths.
 
     An ion is worth computing if its element is abundant enough to contribute
     and if it has a line in the range at all. Reading the line list of an ion
@@ -66,7 +65,7 @@ def ions(
                 if not np.any((w > wavelength.min()) & (w < wavelength.max())):
                     continue
 
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
             # an ion the database cannot describe is an ion which cannot
             # contribute, and there are a handful of them
             continue
@@ -83,7 +82,7 @@ def contribution_function(
     axis: str = "line",
 ) -> na.FunctionArray:
     """
-    The contribution function of every line of an ion.
+    Compute the contribution function of every line of an ion.
 
     Returned as a function of wavelength, so that a line and its strength
     cannot come apart. They are separate arrays underneath, of different
@@ -140,10 +139,10 @@ def lines(
     wavelength: None | u.Quantity = None,
     axis_temperature: str = "temperature",
     axis: str = "line",
-    **kwargs,
+    **kwargs: object,
 ) -> na.FunctionArray:
     """
-    The emission lines of an optically thin plasma, brightest first.
+    Compute the emission lines of an optically thin plasma, brightest first.
 
     Every line of every ion abundant enough to contribute, with the intensity
     it would have from a plasma with the given emission measure.
@@ -196,7 +195,7 @@ def lines(
                 axis_temperature=axis_temperature,
                 axis=axis,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
             # an ion whose atomic model the database cannot complete
             continue
 
@@ -213,10 +212,10 @@ def lines(
 
     result = na.FunctionArray(
         inputs=na.CartesianNdVectorArray(
-            components=dict(
-                wavelength=na.concatenate(wavelength_all, axis=axis),
-                ion=na.concatenate(ion_all, axis=axis),
-            ),
+            components={
+                "wavelength": na.concatenate(wavelength_all, axis=axis),
+                "ion": na.concatenate(ion_all, axis=axis),
+            },
         ),
         outputs=na.concatenate(intensity_all, axis=axis),
     )

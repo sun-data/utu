@@ -1,18 +1,17 @@
 import astropy.units as u
+import fiasco
+import named_arrays as na
 import numpy as np
 import pytest
 
-import named_arrays as na
 import utu
 
 
 def _database() -> bool:
     """Whether the CHIANTI database has been downloaded on this machine."""
     try:
-        import fiasco
-
         return len(fiasco.list_ions()) > 0
-    except Exception:  # pragma: nocover
+    except Exception:  # noqa: BLE001  # pragma: nocover
         return False
 
 
@@ -46,8 +45,6 @@ def test_ions():
 
 @needs_database
 def test_contribution_function():
-    import fiasco
-
     ion = fiasco.Ion("O 5", temperature.ndarray)
 
     density = na.ScalarArray(
@@ -74,8 +71,6 @@ def test_contribution_function():
 @needs_database
 def test_contribution_function_grid():
     """A density on its own axis is every density at every temperature."""
-    import fiasco
-
     ion = fiasco.Ion("O 5", temperature.ndarray)
 
     density = na.ScalarArray(
