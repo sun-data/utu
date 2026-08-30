@@ -30,12 +30,11 @@ test = [
 doc = [
     "matplotlib",
     "graphviz",
-    "sphinx-autodoc-typehints",
-    "sphinxcontrib-bibtex",
     "pydata-sphinx-theme",
     "ipykernel",
     "jupyter-sphinx",
     "sphinx-favicon",
+    "sphinx-codeautolink",
 ]
 
 [project.urls]
