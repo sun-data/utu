@@ -11,7 +11,7 @@ def _database() -> bool:
     """Whether the CHIANTI database has been downloaded on this machine."""
     try:
         return len(fiasco.list_ions()) > 0
-    except Exception:  # noqa: BLE001  # pragma: nocover
+    except Exception:  # pragma: nocover
         return False
 
 

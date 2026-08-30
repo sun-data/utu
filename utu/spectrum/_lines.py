@@ -65,7 +65,7 @@ def ions(
                 if not np.any((w > wavelength.min()) & (w < wavelength.max())):
                     continue
 
-        except Exception:  # noqa: BLE001, S112
+        except Exception:
             # an ion the database cannot describe is an ion which cannot
             # contribute, and there are a handful of them
             continue
@@ -195,7 +195,7 @@ def lines(
                 axis_temperature=axis_temperature,
                 axis=axis,
             )
-        except Exception:  # noqa: BLE001, S112
+        except Exception:
             # an ion whose atomic model the database cannot complete
             continue
 
