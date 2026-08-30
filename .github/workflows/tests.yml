@@ -31,20 +31,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install setuptools wheel
           pip install -e .[test]
+      # Coverage is measured in the `chianti` job below and nowhere else.
+      # These jobs skip every test which reads the atomic database, so their
+      # coverage is a subset of that one's, and Codecov decides a pull request
+      # on whichever reports have arrived when it is asked: the subset lands
+      # first and the answer is wrong until the superset catches up, which is
+      # too late to be reported. One report cannot race itself.
       - name: Test with pytest
         env:
           MPLBACKEND: "agg"
-        run: |
-          pip install pytest pytest-cov
-          pytest --doctest-modules --junitxml=junit/test-results.xml --cov=. --cov-report=xml --cov-report=html
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage.xml
-          flags: unittests
-          env_vars: OS,PYTHON
-          name: codecov-umbrella
+        run: pytest --doctest-modules --junitxml=junit/test-results.xml
 
   # The tests which read the CHIANTI database, which is too large to fetch on
   # every job of the matrix, so it is fetched once here and cached. Without
@@ -98,7 +94,6 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
-          flags: chianti
           name: codecov-umbrella
 
   # A single check for the whole matrix to report through, so that the branch
