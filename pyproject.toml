@@ -76,6 +76,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"docs/conf.py" = [
+    # the names Sphinx reads out of this file are Sphinx's to choose, and one
+    # of them shadows a builtin
+    "A001",
+    # it is configuration rather than a module, and is not imported
+    "INP001",
+]
 "**/_tests/*" = [
     # a test says what it means with `assert`
     "S101",

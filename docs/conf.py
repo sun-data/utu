@@ -1,10 +1,9 @@
 """Configuration for the Sphinx documentation builder."""
 
-import os
+import pathlib
 import sys
 
-package_path = os.path.abspath("../")
-sys.path.insert(0, package_path)
+sys.path.insert(0, str(pathlib.Path("..").resolve()))
 
 project = "utu"
 copyright = "2026, Roy T. Smart"
