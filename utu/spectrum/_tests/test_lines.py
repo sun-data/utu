@@ -20,42 +20,72 @@ needs_database = pytest.mark.skipif(
     reason="the CHIANTI database is not available",
 )
 
-# a window around the O V line, narrow enough that few ions qualify
-wavelength = [629.5, 630.0] * u.AA
+# A window around the O V line, narrow enough that only a handful of ions
+# qualify. Every ion which does costs a level population solve, and six of
+# them prove as much about sorting and filtering as twenty five do.
+wavelength = [629.72, 629.75] * u.AA
 
 temperature = na.ScalarArray(
     ndarray=10 ** np.arange(4.0, 7.0, 0.5) * u.K,
     axes=("temperature",),
 )
 
+density = na.ScalarArray(
+    ndarray=1e15 * u.K / u.cm**3 / temperature.ndarray,
+    axes=("temperature",),
+)
+
+emission_measure = na.ScalarArray(
+    ndarray=1e27 / u.cm**5 * np.ones(temperature.shape["temperature"]),
+    axes=("temperature",),
+)
+
+
+# Each of the fixtures below walks the whole database, which takes an order
+# of magnitude longer than anything the tests do with the result. They are
+# scoped to the session so that the suite pays for each walk once.
+
+
+@pytest.fixture(scope="session")
+def ions_all() -> list[str]:
+    """Every ion the database describes."""
+    return utu.spectrum.ions()
+
+
+@pytest.fixture(scope="session")
+def ions_window() -> list[str]:
+    """Every ion with a line in the window above."""
+    return utu.spectrum.ions(wavelength=wavelength)
+
+
+@pytest.fixture(scope="session")
+def proton_electron_ratio() -> u.Quantity:
+    """The ratio of protons to electrons at each temperature above."""
+    return fiasco.proton_electron_ratio(temperature.ndarray)
+
 
 @needs_database
-def test_ions():
-    result = utu.spectrum.ions(wavelength=wavelength)
-    assert result
-    for name in result:
+def test_ions(ions_window: list[str], ions_all: list[str]):
+    assert ions_window
+    for name in ions_window:
         assert isinstance(name, str)
 
     # the line this window was chosen for
-    assert "O 5" in result
+    assert "O 5" in ions_window
 
     # and asking for every ion gives more of them
-    assert len(result) < len(utu.spectrum.ions())
+    assert len(ions_window) < len(ions_all)
 
 
 @needs_database
-def test_contribution_function():
+def test_contribution_function(proton_electron_ratio: u.Quantity):
     ion = fiasco.Ion("O 5", temperature.ndarray)
-
-    density = na.ScalarArray(
-        ndarray=1e9 / u.cm**3 * np.ones(temperature.shape["temperature"]),
-        axes=("temperature",),
-    )
 
     result = utu.spectrum.contribution_function(
         ion=ion,
         density=density,
         axis_temperature="temperature",
+        proton_electron_ratio=proton_electron_ratio,
     )
 
     assert isinstance(result, na.FunctionArray)
@@ -69,19 +99,20 @@ def test_contribution_function():
 
 
 @needs_database
-def test_contribution_function_grid():
+def test_contribution_function_grid(proton_electron_ratio: u.Quantity):
     """A density on its own axis is every density at every temperature."""
     ion = fiasco.Ion("O 5", temperature.ndarray)
 
-    density = na.ScalarArray(
+    density_grid = na.ScalarArray(
         ndarray=np.array([1e9, 1e10]) / u.cm**3,
         axes=("density",),
     )
 
     result = utu.spectrum.contribution_function(
         ion=ion,
-        density=density,
+        density=density_grid,
         axis_temperature="temperature",
+        proton_electron_ratio=proton_electron_ratio,
     )
 
     shape = na.shape(result.outputs)
@@ -91,15 +122,7 @@ def test_contribution_function_grid():
 
 @needs_database
 def test_lines():
-    density = na.ScalarArray(
-        ndarray=1e15 * u.K / u.cm**3 / temperature.ndarray,
-        axes=("temperature",),
-    )
-    emission_measure = na.ScalarArray(
-        ndarray=1e27 / u.cm**5 * np.ones(temperature.shape["temperature"]),
-        axes=("temperature",),
-    )
-
+    """The whole of it, with nothing given that can be worked out."""
     result = utu.spectrum.lines(
         temperature=temperature,
         density=density,
@@ -130,26 +153,21 @@ def test_lines():
 
 
 @needs_database
-def test_lines_ions():
+def test_lines_ions(
+    ions_window: list[str],
+    proton_electron_ratio: u.Quantity,
+):
     """Naming the ions is what keeps a result from depending on the database."""
-    density = na.ScalarArray(
-        ndarray=1e15 * u.K / u.cm**3 / temperature.ndarray,
-        axes=("temperature",),
-    )
-    emission_measure = na.ScalarArray(
-        ndarray=1e27 / u.cm**5 * np.ones(temperature.shape["temperature"]),
-        axes=("temperature",),
-    )
-
     result = utu.spectrum.lines(
         temperature=temperature,
         density=density,
         emission_measure=emission_measure,
         wavelength=wavelength,
         ions=["O 5"],
+        proton_electron_ratio=proton_electron_ratio,
     )
 
     assert np.all(result.inputs.ion == "O 5")
 
     # and there were other ions to be had in this window
-    assert len(utu.spectrum.ions(wavelength=wavelength)) > 1
+    assert len(ions_window) > 1

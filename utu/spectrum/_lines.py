@@ -1,5 +1,7 @@
 """The emission lines of an optically thin plasma."""
 
+import functools
+
 import astropy.units as u
 import fiasco
 import named_arrays as na
@@ -43,6 +45,11 @@ def ions(
     returned, and the databases built for a documentation page or a test
     suite describe only a few.
 
+    The database is read on the first call and remembered afterwards, so the
+    first call takes a few seconds and the rest take none. What is
+    remembered is the wavelengths of the lines of the ions abundant enough
+    to pass ``abundance_min``, a few megabytes.
+
     Examples
     --------
     The line ESIS was built to observe is a line of :math:`\mathrm{O\,V}`.
@@ -56,6 +63,30 @@ def ions(
     """
     result = []
 
+    for name, w in _catalog(abundance_min, **kwargs).items():
+        if wavelength is not None:
+            if not np.any((w > wavelength.min()) & (w < wavelength.max())):
+                continue
+        result.append(name)
+
+    return result
+
+
+@functools.cache
+def _catalog(
+    abundance_min: float,
+    **kwargs: object,
+) -> dict[str, u.Quantity]:
+    """
+    The wavelengths of every line of every ion abundant enough to matter.
+
+    Read once and remembered afterwards. The database does not change while
+    a program runs, and reading it is where nearly all the time of
+    :func:`ions` goes: five hundred ions at about thirty milliseconds each,
+    almost none of it spent on the file.
+    """
+    result = {}
+
     for name in fiasco.list_ions():
         try:
             ion = fiasco.Ion(name, 1 * u.MK, **kwargs)
@@ -67,17 +98,14 @@ def ions(
             if transitions is None:  # pragma: nocover
                 continue
 
-            if wavelength is not None:
-                w = transitions.wavelength
-                if not np.any((w > wavelength.min()) & (w < wavelength.max())):
-                    continue
+            wavelength = transitions.wavelength
 
         except Exception:
             # an ion the database cannot describe is an ion which cannot
             # contribute, and there are a handful of them
             continue
 
-        result.append(str(name))
+        result[str(name)] = wavelength
 
     return result
 
@@ -94,6 +122,7 @@ def contribution_function(
     density: u.Quantity | na.AbstractScalar,
     axis_temperature: str,
     axis: str = "line",
+    proton_electron_ratio: None | u.Quantity = None,
 ) -> na.FunctionArray:
     """
     Compute the contribution function of every line of an ion.
@@ -120,6 +149,15 @@ def contribution_function(
         The name of the axis of the temperature of ``ion``.
     axis
         The name to give the axis along the lines of the result.
+    proton_electron_ratio
+        The ratio of protons to electrons at each temperature of ``ion``.
+        If :obj:`None` (the default), :mod:`fiasco` computes it, which walks
+        the whole database and takes an order of magnitude longer than the
+        rest of this function put together. It depends on the temperature
+        and on nothing else, so a caller with more than one ion should
+        compute it once with :func:`fiasco.proton_electron_ratio` and pass
+        it here. Doing so primes the cache of ``ion`` with the value it
+        would otherwise have computed for itself.
 
     Examples
     --------
@@ -160,6 +198,9 @@ def contribution_function(
         ax.set_xlabel(f"temperature ({temperature.unit:latex_inline})")
         ax.set_ylabel(f"$G(T)$ ({result.outputs.unit:latex_inline})")
     """
+    if proton_electron_ratio is not None:
+        ion.__dict__["proton_electron_ratio"] = proton_electron_ratio
+
     axis_density = tuple(na.shape(density))
 
     coupled = tuple(axis_density) == (axis_temperature,)
@@ -191,6 +232,7 @@ def lines(
     emission_measure: u.Quantity | na.AbstractScalar,
     wavelength: None | u.Quantity = None,
     ions: None | list[str] = None,
+    proton_electron_ratio: None | u.Quantity = None,
     axis_temperature: str = "temperature",
     axis: str = "line",
     **kwargs: object,
@@ -225,6 +267,11 @@ def lines(
         is every ion the database describes with a line in ``wavelength``.
         Naming them is how a result is made to depend on the ions rather
         than on which of them the database at hand happens to hold.
+    proton_electron_ratio
+        The ratio of protons to electrons at each temperature.
+        If :obj:`None` (the default), it is computed here, once, and given
+        to every ion. Pass it to compute more than one spectrum over one
+        grid of temperatures without paying for it again.
     axis_temperature
         The name of the axis of ``temperature``.
     axis
@@ -259,9 +306,10 @@ def lines(
 
     # The ratio of protons to electrons depends on the temperature and on
     # nothing else, and computing it walks the entire database. Computed
-    # once here and primed into the cache of every ion, which is most of
-    # what makes this bearable.
-    ratio = fiasco.fiasco.proton_electron_ratio(t, **kwargs)
+    # once here and handed to every ion, which is most of what makes this
+    # bearable.
+    if proton_electron_ratio is None:
+        proton_electron_ratio = fiasco.proton_electron_ratio(t, **kwargs)
 
     wavelength_all = []
     intensity_all = []
@@ -271,15 +319,13 @@ def lines(
         ions = _ions(wavelength=wavelength, **kwargs)
 
     for name in ions:
-        ion = fiasco.Ion(name, t, **kwargs)
-        ion.__dict__["proton_electron_ratio"] = ratio
-
         try:
             g = contribution_function(
-                ion=ion,
+                ion=fiasco.Ion(name, t, **kwargs),
                 density=density,
                 axis_temperature=axis_temperature,
                 axis=axis,
+                proton_electron_ratio=proton_electron_ratio,
             )
         except Exception:  # pragma: nocover
             # an ion whose atomic model the database cannot complete
