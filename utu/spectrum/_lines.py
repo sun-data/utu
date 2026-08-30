@@ -17,7 +17,7 @@ def ions(
     abundance_min: float = 1e-5,
     **kwargs: object,
 ) -> list[str]:
-    """
+    r"""
     Find the ions worth computing over a range of wavelengths.
 
     An ion is worth computing if its element is abundant enough to contribute
@@ -36,20 +36,23 @@ def ions(
     kwargs
         Additional arguments passed to :class:`fiasco.Ion`.
 
+    Notes
+    -----
+    Which ions come back is a statement about the database as much as about
+    the wavelengths: an ion the database does not describe cannot be
+    returned, and the databases built for a documentation page or a test
+    suite describe only a few.
+
     Examples
     --------
-    The ions with a line in the passband of ESIS.
+    The line ESIS was built to observe is a line of :math:`\mathrm{O\,V}`.
 
-    Every ion with a line in the passband of ESIS, of which there are 81.
-    Not run here, since it reads the CHIANTI database, which the machine
-    building this page does not have.
-
-    .. code-block:: python
+    .. jupyter-execute::
 
         import astropy.units as u
         import utu
 
-        len(utu.spectrum.ions(wavelength=[550, 680] * u.AA))
+        "O 5" in utu.spectrum.ions(wavelength=[629, 630] * u.AA)
     """
     result = []
 
@@ -61,7 +64,7 @@ def ions(
                 continue
 
             transitions = ion.transitions
-            if transitions is None:
+            if transitions is None:  # pragma: nocover
                 continue
 
             if wavelength is not None:
@@ -77,6 +80,13 @@ def ions(
         result.append(str(name))
 
     return result
+
+
+_ions = ions
+"""
+A private alias for :func:`ions`, so that :func:`lines` can take a parameter
+of that name without hiding the function it falls back on.
+"""
 
 
 def contribution_function(
@@ -110,6 +120,45 @@ def contribution_function(
         The name of the axis of the temperature of ``ion``.
     axis
         The name to give the axis along the lines of the result.
+
+    Examples
+    --------
+    The contribution function of the line ESIS was built to observe, which
+    peaks at the temperature the line is formed at.
+
+    .. jupyter-execute::
+
+        import astropy.units as u
+        import fiasco
+        import matplotlib.pyplot as plt
+        import named_arrays as na
+        import numpy as np
+        import utu
+
+        axis = "temperature"
+        temperature = na.geomspace(1e4, 1e7, axis=axis, num=61) * u.K
+
+        ion = fiasco.Ion("O 5", temperature.ndarray)
+
+        result = utu.spectrum.contribution_function(
+            ion=ion,
+            density=1e15 * u.K / u.cm ** 3 / temperature,
+            axis_temperature=axis,
+        )
+
+        # the strongest line of the ion, at 629.7 angstroms
+        index = np.argmax(result.outputs.max(axis), axis="line")
+
+        fig, ax = plt.subplots(constrained_layout=True)
+        na.plt.plot(
+            temperature,
+            result.outputs[index],
+            ax=ax,
+            axis=axis,
+        )
+        ax.set_xscale("log")
+        ax.set_xlabel(f"temperature ({temperature.unit:latex_inline})")
+        ax.set_ylabel(f"$G(T)$ ({result.outputs.unit:latex_inline})")
     """
     axis_density = tuple(na.shape(density))
 
@@ -141,6 +190,7 @@ def lines(
     density: u.Quantity | na.AbstractScalar,
     emission_measure: u.Quantity | na.AbstractScalar,
     wavelength: None | u.Quantity = None,
+    ions: None | list[str] = None,
     axis_temperature: str = "temperature",
     axis: str = "line",
     **kwargs: object,
@@ -169,12 +219,41 @@ def lines(
     wavelength
         The range of wavelengths to compute over.
         If :obj:`None` (the default), every line of every ion is returned.
+    ions
+        The ions to compute the lines of, named as :mod:`fiasco` names them.
+        If :obj:`None` (the default), they are found with :func:`ions`, which
+        is every ion the database describes with a line in ``wavelength``.
+        Naming them is how a result is made to depend on the ions rather
+        than on which of them the database at hand happens to hold.
     axis_temperature
         The name of the axis of ``temperature``.
     axis
         The name to give the axis along the lines of the result.
     kwargs
         Additional arguments passed to :class:`fiasco.Ion`.
+
+    Examples
+    --------
+    The brightest lines of two ions, from a plasma spread evenly over a
+    decade of temperature.
+
+    .. jupyter-execute::
+
+        import astropy.units as u
+        import named_arrays as na
+        import utu
+
+        temperature = na.geomspace(1e5, 1e6, axis="temperature", num=11) * u.K
+
+        result = utu.spectrum.lines(
+            temperature=temperature,
+            density=1e15 * u.K / u.cm ** 3 / temperature,
+            emission_measure=1e27 / u.cm ** 5,
+            wavelength=[550, 680] * u.AA,
+            ions=["O 5", "Mg 10"],
+        )
+
+        result[{"line": slice(4)}]
     """
     t = na.as_named_array(temperature).ndarray
 
@@ -188,7 +267,10 @@ def lines(
     intensity_all = []
     ion_all = []
 
-    for name in ions(wavelength=wavelength, **kwargs):
+    if ions is None:
+        ions = _ions(wavelength=wavelength, **kwargs)
+
+    for name in ions:
         ion = fiasco.Ion(name, t, **kwargs)
         ion.__dict__["proton_electron_ratio"] = ratio
 
@@ -199,7 +281,7 @@ def lines(
                 axis_temperature=axis_temperature,
                 axis=axis,
             )
-        except Exception:
+        except Exception:  # pragma: nocover
             # an ion whose atomic model the database cannot complete
             continue
 

@@ -127,3 +127,29 @@ def test_lines():
     brightest = {"line": 0}
     assert str(ion[brightest].ndarray) == "O 5"
     assert np.isclose(w[brightest].ndarray.to_value(u.AA), 629.733, atol=1e-2)
+
+
+@needs_database
+def test_lines_ions():
+    """Naming the ions is what keeps a result from depending on the database."""
+    density = na.ScalarArray(
+        ndarray=1e15 * u.K / u.cm**3 / temperature.ndarray,
+        axes=("temperature",),
+    )
+    emission_measure = na.ScalarArray(
+        ndarray=1e27 / u.cm**5 * np.ones(temperature.shape["temperature"]),
+        axes=("temperature",),
+    )
+
+    result = utu.spectrum.lines(
+        temperature=temperature,
+        density=density,
+        emission_measure=emission_measure,
+        wavelength=wavelength,
+        ions=["O 5"],
+    )
+
+    assert np.all(result.inputs.ion == "O 5")
+
+    # and there were other ions to be had in this window
+    assert len(utu.spectrum.ions(wavelength=wavelength)) > 1
