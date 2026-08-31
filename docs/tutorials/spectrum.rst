@@ -134,7 +134,8 @@ sorting or selecting lines carries all three together.
         temperature=temperature,
         density=density,
         emission_measure=emission_measure,
-        wavelength=[550, 680] * u.AA,
+        wavelength_min=550 * u.AA,
+        wavelength_max=680 * u.AA,
         ions=ion,
     )
 

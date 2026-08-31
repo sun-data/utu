@@ -23,7 +23,10 @@ needs_database = pytest.mark.skipif(
 # A window around the O V line, narrow enough that only a handful of ions
 # qualify. Every ion which does costs a level population solve, and six of
 # them prove as much about sorting and filtering as twenty five do.
-wavelength = [629.72, 629.75] * u.AA
+# Given as named scalars rather than as plain quantities, since both are
+# allowed and only one of them would otherwise be tried.
+wavelength_min = na.ScalarArray(629.72 * u.AA)
+wavelength_max = na.ScalarArray(629.75 * u.AA)
 
 temperature = na.ScalarArray(
     ndarray=10 ** np.arange(4.0, 7.0, 0.5) * u.K,
@@ -55,7 +58,10 @@ def ions_all() -> list[str]:
 @pytest.fixture(scope="session")
 def ions_window() -> list[str]:
     """Every ion with a line in the window above."""
-    return utu.spectrum.ions(wavelength=wavelength)
+    return utu.spectrum.ions(
+        wavelength_min=wavelength_min,
+        wavelength_max=wavelength_max,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -127,7 +133,8 @@ def test_lines():
         temperature=temperature,
         density=density,
         emission_measure=emission_measure,
-        wavelength=wavelength,
+        wavelength_min=wavelength_min,
+        wavelength_max=wavelength_max,
     )
 
     assert isinstance(result, na.FunctionArray)
@@ -139,8 +146,8 @@ def test_lines():
     # the wavelength, the ion, and the intensity of a line are one array
     assert na.shape(w) == na.shape(ion) == na.shape(intensity)
 
-    assert np.all(w > wavelength.min())
-    assert np.all(w < wavelength.max())
+    assert np.all(w > wavelength_min)
+    assert np.all(w < wavelength_max)
 
     # brightest first
     d = np.diff(na.value(intensity).ndarray)
@@ -162,7 +169,8 @@ def test_lines_ions(
         temperature=temperature,
         density=density,
         emission_measure=emission_measure,
-        wavelength=wavelength,
+        wavelength_min=wavelength_min,
+        wavelength_max=wavelength_max,
         ions=["O 5"],
         proton_electron_ratio=proton_electron_ratio,
     )

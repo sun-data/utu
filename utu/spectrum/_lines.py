@@ -15,7 +15,8 @@ __all__ = [
 
 
 def ions(
-    wavelength: None | u.Quantity = None,
+    wavelength_min: None | u.Quantity | na.AbstractScalar = None,
+    wavelength_max: None | u.Quantity | na.AbstractScalar = None,
     abundance_min: float = 1e-5,
     **kwargs: object,
 ) -> list[str]:
@@ -29,9 +30,12 @@ def ions(
 
     Parameters
     ----------
-    wavelength
-        The range of wavelengths to look in.
-        If :obj:`None` (the default), every ion in the database is returned.
+    wavelength_min
+        The shortest wavelength worth looking at.
+        If :obj:`None` (the default), there is no lower bound.
+    wavelength_max
+        The longest wavelength worth looking at.
+        If :obj:`None` (the default), there is no upper bound.
     abundance_min
         The abundance, relative to hydrogen, below which an element is not
         worth including.
@@ -59,17 +63,42 @@ def ions(
         import astropy.units as u
         import utu
 
-        "O 5" in utu.spectrum.ions(wavelength=[629, 630] * u.AA)
+        "O 5" in utu.spectrum.ions(
+            wavelength_min=629 * u.AA,
+            wavelength_max=630 * u.AA,
+        )
     """
+    wavelength_min = _quantity(wavelength_min)
+    wavelength_max = _quantity(wavelength_max)
+
     result = []
 
     for name, w in _catalog(abundance_min, **kwargs).items():
-        if wavelength is not None:
-            if not np.any((w > wavelength.min()) & (w < wavelength.max())):
-                continue
+        where = np.ones(w.shape, dtype=bool)
+        if wavelength_min is not None:
+            where = where & (w > wavelength_min)
+        if wavelength_max is not None:
+            where = where & (w < wavelength_max)
+        if not np.any(where):
+            continue
         result.append(name)
 
     return result
+
+
+def _quantity(
+    value: None | u.Quantity | na.AbstractScalar,
+) -> None | u.Quantity:
+    """
+    A value as a plain quantity, however it was given.
+
+    :mod:`fiasco` is not a named-arrays library, and neither are the line
+    lists it returns, so anything handed to it or compared against it has to
+    shed its axes on the way.
+    """
+    if isinstance(value, na.AbstractArray):
+        return value.ndarray
+    return value
 
 
 @functools.cache
@@ -122,7 +151,7 @@ def contribution_function(
     density: u.Quantity | na.AbstractScalar,
     axis_temperature: str,
     axis: str = "line",
-    proton_electron_ratio: None | u.Quantity = None,
+    proton_electron_ratio: None | u.Quantity | na.AbstractScalar = None,
 ) -> na.FunctionArray:
     """
     Compute the contribution function of every line of an ion.
@@ -199,7 +228,7 @@ def contribution_function(
         ax.set_ylabel(f"$G(T)$ ({result.outputs.unit:latex_inline})")
     """
     if proton_electron_ratio is not None:
-        ion.__dict__["proton_electron_ratio"] = proton_electron_ratio
+        ion.__dict__["proton_electron_ratio"] = _quantity(proton_electron_ratio)
 
     axis_density = tuple(na.shape(density))
 
@@ -230,9 +259,10 @@ def lines(
     temperature: na.AbstractScalar,
     density: u.Quantity | na.AbstractScalar,
     emission_measure: u.Quantity | na.AbstractScalar,
-    wavelength: None | u.Quantity = None,
+    wavelength_min: None | u.Quantity | na.AbstractScalar = None,
+    wavelength_max: None | u.Quantity | na.AbstractScalar = None,
     ions: None | list[str] = None,
-    proton_electron_ratio: None | u.Quantity = None,
+    proton_electron_ratio: None | u.Quantity | na.AbstractScalar = None,
     axis_temperature: str = "temperature",
     axis: str = "line",
     **kwargs: object,
@@ -258,9 +288,12 @@ def lines(
         at every temperature.
     emission_measure
         How much plasma there is at each temperature.
-    wavelength
-        The range of wavelengths to compute over.
-        If :obj:`None` (the default), every line of every ion is returned.
+    wavelength_min
+        The shortest wavelength worth computing.
+        If :obj:`None` (the default), there is no lower bound.
+    wavelength_max
+        The longest wavelength worth computing.
+        If :obj:`None` (the default), there is no upper bound.
     ions
         The ions to compute the lines of, named as :mod:`fiasco` names them.
         If :obj:`None` (the default), they are found with :func:`ions`, which
@@ -296,7 +329,8 @@ def lines(
             temperature=temperature,
             density=1e15 * u.K / u.cm ** 3 / temperature,
             emission_measure=1e27 / u.cm ** 5,
-            wavelength=[550, 680] * u.AA,
+            wavelength_min=550 * u.AA,
+            wavelength_max=680 * u.AA,
             ions=["O 5", "Mg 10"],
         )
 
@@ -316,7 +350,11 @@ def lines(
     ion_all = []
 
     if ions is None:
-        ions = _ions(wavelength=wavelength, **kwargs)
+        ions = _ions(
+            wavelength_min=wavelength_min,
+            wavelength_max=wavelength_max,
+            **kwargs,
+        )
 
     for name in ions:
         try:
@@ -334,8 +372,13 @@ def lines(
         intensity = (g.outputs * emission_measure).sum(axis_temperature)
 
         w = g.inputs
-        if wavelength is not None:
-            where = (w > wavelength.min()) & (w < wavelength.max())
+        where = None
+        if wavelength_min is not None:
+            where = w > wavelength_min
+        if wavelength_max is not None:
+            below = w < wavelength_max
+            where = below if where is None else where & below
+        if where is not None:
             w, intensity = w[where], intensity[where]
 
         wavelength_all.append(w)
