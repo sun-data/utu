@@ -1,6 +1,7 @@
 # utu
 
 [![tests](https://github.com/sun-data/utu/actions/workflows/tests.yml/badge.svg)](https://github.com/sun-data/utu/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/sun-data/utu/graph/badge.svg)](https://codecov.io/gh/sun-data/utu)
 [![Black](https://github.com/sun-data/utu/actions/workflows/black.yml/badge.svg)](https://github.com/sun-data/utu/actions/workflows/black.yml)
 [![Ruff](https://github.com/sun-data/utu/actions/workflows/ruff.yml/badge.svg)](https://github.com/sun-data/utu/actions/workflows/ruff.yml)
 [![Documentation Status](https://readthedocs.org/projects/utu/badge/?version=latest)](https://utu.readthedocs.io/en/latest/?badge=latest)
