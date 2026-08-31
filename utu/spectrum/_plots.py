@@ -20,6 +20,7 @@ def stem(
     num_label: None | int = None,
     latex: bool = False,
     headroom: float = 1.45,
+    num_floor: int = 200,
     axis: str = "line",
     kwargs_line: None | dict = None,
     kwargs_text: None | dict = None,
@@ -55,6 +56,10 @@ def stem(
     headroom
         How much taller than the brightest line to make the axes, so that
         the labels have somewhere to be pushed into.
+    num_floor
+        How many points to lay along the baseline for the labels to be
+        pushed off. Fewer than the labels are wide leaves gaps for one to
+        settle into.
     axis
         The name of the axis along the lines of ``spectrum``.
     kwargs_line
@@ -126,6 +131,14 @@ def stem(
         y = np.linspace(0, intensity[i], num=num)
         y_static.append(y)
         x_static.append(np.broadcast_to(wavelength[i], y.shape))
+
+    # And a floor of them along the baseline. The lines stand on it but do
+    # not cover it, so without this the strip of axis between two lines is
+    # empty as far as the solver can tell, and the label of a faint line is
+    # left lying along the bottom of the plot, which is where it started.
+    x_floor = np.linspace(wavelength.min(), wavelength.max(), num=num_floor)
+    x_static.append(x_floor)
+    y_static.append(np.zeros_like(x_floor))
 
     # brightest first, so that taking the first few takes the brightest few
     order = np.argsort(spectrum.outputs, axis=axis)
