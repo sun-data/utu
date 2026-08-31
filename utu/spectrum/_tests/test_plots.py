@@ -199,3 +199,18 @@ def test_stem_collisions():
                 assert not _touches(box[text], a, b)
 
     plt.close(fig)
+
+
+def test_touches():
+    """
+    The measurement above is only worth as much as this.
+
+    Its whole assertion is that ``_touches`` is false of everything, which
+    is also what it would report if it were false of everything whatever it
+    was given. That has happened here before, in a measurement written the
+    same way and believed for it, so the two cases are checked.
+    """
+    box = matplotlib.transforms.Bbox([[0, 0], [10, 10]])
+
+    assert _touches(box, np.array([5.0, -5.0]), np.array([5.0, 15.0]))
+    assert not _touches(box, np.array([20.0, -5.0]), np.array([20.0, 15.0]))
