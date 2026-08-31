@@ -18,7 +18,7 @@ jobs:
           windows-latest,
           macOS-latest,
         ]
-        python-version: ["3.11", "3.13"]
+        python-version: ["3.12", "3.13"]
     name: ${{ matrix.os }}, Python ${{ matrix.python-version }} tests
     steps:
       - uses: actions/checkout@v4
@@ -31,19 +31,69 @@ jobs:
           python -m pip install --upgrade pip
           pip install setuptools wheel
           pip install -e .[test]
+      # Coverage is measured in the `chianti` job below and nowhere else.
+      # These jobs skip every test which reads the atomic database, so their
+      # coverage is a subset of that one's, and Codecov decides a pull request
+      # on whichever reports have arrived when it is asked: the subset lands
+      # first and the answer is wrong until the superset catches up, which is
+      # too late to be reported. One report cannot race itself.
       - name: Test with pytest
         env:
           MPLBACKEND: "agg"
+        run: pytest --doctest-modules --junitxml=junit/test-results.xml
+
+  # The tests which read the CHIANTI database, which is too large to fetch on
+  # every job of the matrix, so it is fetched once here and cached. Without
+  # this the whole of `utu.spectrum` skips, and CI reports success on code it
+  # never ran.
+  chianti:
+    runs-on: ubuntu-latest
+    name: ubuntu-latest, Python 3.13, CHIANTI tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install package
         run: |
-          pip install pytest pytest-cov
-          pytest --doctest-modules --junitxml=junit/test-results.xml --cov=. --cov-report=xml --cov-report=html
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+          pip install pytest-cov
+      - name: Ask fiasco which database it wants
+        id: chianti
+        run: |
+          python -c "
+          from fiasco.util.setup_db import LATEST_VERSION
+          print(f'version={LATEST_VERSION}')
+          " >> $GITHUB_OUTPUT
+      - name: Restore the CHIANTI database
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.fiasco
+          key: chianti-${{ steps.chianti.outputs.version }}
+      - name: Download and build the CHIANTI database
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -c "
+          import fiasco
+          from fiasco.util import check_database
+          check_database(
+              hdf5_dbase_root=fiasco.defaults['hdf5_dbase_root'],
+              ascii_dbase_root=fiasco.defaults['ascii_dbase_root'],
+              ask_before=False,
+          )
+          "
+      - name: Test with pytest
+        env:
+          MPLBACKEND: "agg"
+        run: pytest --cov=. --cov-report=xml
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
-          flags: unittests
-          env_vars: OS,PYTHON
           name: codecov-umbrella
 
   # A single check for the whole matrix to report through, so that the branch
@@ -53,13 +103,15 @@ jobs:
   # and a pull request waits on it forever.
   tests:
     if: always()
-    needs: build
+    needs: [build, chianti]
     runs-on: ubuntu-latest
     steps:
       - name: Check whether every job in the matrix succeeded
         run: |
-          if [ "${{ needs.build.result }}" != "success" ]; then
-            echo "the matrix reported '${{ needs.build.result }}'"
-            exit 1
-          fi
+          for result in "${{ needs.build.result }}" "${{ needs.chianti.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "a job reported '$result'"
+              exit 1
+            fi
+          done
           echo "every job in the matrix succeeded"

@@ -9,7 +9,7 @@ authors = [
 ]
 description = "A Python library of solar physics utilities built on named arrays"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 classifiers = [
@@ -18,7 +18,10 @@ classifiers = [
 dependencies = [
     "numpy",
     "astropy",
+    "matplotlib",
+    "adjustText",
     "named-arrays~=2.8",
+    "fiasco~=0.8.2",
 ]
 dynamic = ["version"]
 
@@ -42,3 +45,6 @@ Homepage = "https://github.com/sun-data/utu"
 Documentation = "https://utu.readthedocs.io"
 
 [tool.setuptools_scm]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

@@ -11,6 +11,15 @@ Installation
 
     pip install utu
 
+Tutorials
+=========
+
+.. toctree::
+    :maxdepth: 1
+
+    tutorials/spectrum
+
+
 API Reference
 =============
 
