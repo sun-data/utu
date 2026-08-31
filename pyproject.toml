@@ -18,6 +18,8 @@ classifiers = [
 dependencies = [
     "numpy",
     "astropy",
+    "matplotlib",
+    "adjustText",
     "named-arrays~=2.8",
     "fiasco~=0.8.2",
 ]

@@ -166,29 +166,22 @@ over the whole sphere.
 The spectrum
 ------------
 
-Drawn as a stick spectrum, this is the picture an instrument is designed
-against: where the light is, and how much of it there is beside everything
-else the passband will admit. The sticks are coloured by the ion which
-emitted them, and four of the seven ions turn out to have nothing bright
-enough here to appear at all.
+Drawn as a stem from zero for each line, this is the picture an instrument is
+designed against: where the light is, and how much of it there is beside
+everything else the passband will admit.
+:func:`~utu.spectrum.stem` draws it and names the brightest lines, moving the
+labels apart so that none covers another or crosses a line it does not belong
+to.
+
+It takes a spectrum in the shape :func:`~utu.spectrum.lines` returns, so the
+radiance computed above has to be put back into one before it can be drawn.
 
 .. jupyter-execute::
 
-    w = wavelength.ndarray.to_value(u.AA)
-    r = radiance.ndarray.value
-
     fig, ax = plt.subplots(figsize=(7, 3), constrained_layout=True)
-    for i, name_i in enumerate(ion):
-        where = brightest.inputs.ion.ndarray == name_i
-        if not where.any():
-            continue
-        ax.vlines(
-            x=w[where],
-            ymin=0,
-            ymax=r[where],
-            colors=f"C{i}",
-            label=utu.spectrum.spectroscopic(name_i),
-        )
-    ax.legend(loc="upper left")
+    utu.spectrum.stem(
+        na.FunctionArray(inputs=brightest.inputs, outputs=radiance),
+        ax=ax,
+    )
     ax.set_xlabel(f"wavelength ({u.AA:latex_inline})")
     ax.set_ylabel(f"radiance ({radiance.unit:latex_inline})");
