@@ -183,7 +183,19 @@ def stem(
             },
             "force_static": (0.4, 0.6),
             "force_text": (0.4, 0.6),
-            "expand": (1.15, 1.4),
+            # A label is an ion and a wavelength, so it is several times
+            # wider than it is tall, and two of them need far more room
+            # beside one another than above. Kept level with the default
+            # otherwise: two lines a hundredth of an angstrom apart, as
+            # Mg X and O IV are at 609.8, stack one directly above the
+            # other, and the leader of the upper one then runs down behind
+            # the lower one and is lost.
+            #
+            # Wider still than that would suggest, because the solver
+            # measures a label by the glyphs in it while what is drawn is
+            # the box around them, larger by its padding, so a label placed
+            # flush against a line covers a sliver of it.
+            "expand": (2.0, 1.4),
             "max_move": (30, 30),
             "time_lim": 10,
         }
