@@ -4,6 +4,7 @@
 [![Black](https://github.com/sun-data/utu/actions/workflows/black.yml/badge.svg)](https://github.com/sun-data/utu/actions/workflows/black.yml)
 [![Ruff](https://github.com/sun-data/utu/actions/workflows/ruff.yml/badge.svg)](https://github.com/sun-data/utu/actions/workflows/ruff.yml)
 [![Documentation Status](https://readthedocs.org/projects/utu/badge/?version=latest)](https://utu.readthedocs.io/en/latest/?badge=latest)
+[![PyPI version](https://badge.fury.io/py/utu.svg)](https://badge.fury.io/py/utu)
 
 A Python library of solar physics utilities built on
 [named arrays](https://github.com/sun-data/named-arrays).
