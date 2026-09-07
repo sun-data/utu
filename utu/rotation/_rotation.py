@@ -154,44 +154,74 @@ def rotate(
 
     Examples
     --------
-    Rotate a point at disk centre forward by a day. It moves west by about a
-    fifth of the solar radius.
+    Take a grid of points across the disk and rotate it forward by a day,
+    drawing a line from where each point was to where the rotation puts it.
+    The lines are shortest near the limb, where the motion is mostly toward
+    the observer and hardly changes where a point appears to be, and shorter
+    toward the poles, which turn more slowly than the equator.
 
     .. jupyter-execute::
 
         import astropy.time
         import astropy.units as u
+        import matplotlib.pyplot as plt
         import named_arrays as na
+        import sunpy.coordinates.sun
         import utu
 
-        position = na.Cartesian2dVectorArray(
-            x=0 * u.arcsec,
-            y=0 * u.arcsec,
+        time = astropy.time.Time("2026-09-02T00:00")
+        radius = sunpy.coordinates.sun.angular_radius(time)
+
+        start = na.Cartesian2dVectorArray(
+            x=na.linspace(-600, 600, axis="x", num=7) * u.arcsec,
+            y=na.linspace(-600, 600, axis="y", num=7) * u.arcsec,
         )
 
-        utu.rotation.rotate(
-            position=position,
-            time=astropy.time.Time("2026-09-02T00:00"),
-            time_out=astropy.time.Time("2026-09-03T00:00"),
+        end = utu.rotation.rotate(
+            position=start,
+            time=time,
+            time_out=time + 1 * u.day,
         )
 
-    Rotation is faster at the equator than at the poles, so a line of points
-    at the same longitude does not stay straight.
+        # the two ends of each line, along an axis of their own
+        track = na.Cartesian2dVectorArray(
+            x=na.stack([na.broadcast_to(start.x, end.shape), end.x], axis="end"),
+            y=na.stack([na.broadcast_to(start.y, end.shape), end.y], axis="end"),
+        )
+
+        fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
+        ax.add_patch(plt.Circle((0, 0), radius.to_value(u.arcsec), color="0.95"))
+        na.plt.plot(track.x, track.y, ax=ax, axis="end", color="tab:blue")
+        na.plt.scatter(start.x, start.y, ax=ax, s=10, color="black")
+        ax.set_aspect("equal")
+        ax.set_xlabel(f"helioprojective $x$ ({u.arcsec:latex_inline})")
+        ax.set_ylabel(f"helioprojective $y$ ({u.arcsec:latex_inline})");
+
+    Which is what makes the rotation differential: a meridian, whose points
+    all start at the same longitude, does not stay straight.
 
     .. jupyter-execute::
 
-        position = na.Cartesian2dVectorArray(
+        meridian = na.Cartesian2dVectorArray(
             x=0 * u.arcsec,
-            y=na.linspace(-800, 800, axis="y", num=5) * u.arcsec,
+            y=na.linspace(-850, 850, axis="y", num=25) * u.arcsec,
         )
 
-        result = utu.rotation.rotate(
-            position=position,
-            time=astropy.time.Time("2026-09-02T00:00"),
-            time_out=astropy.time.Time("2026-09-03T00:00"),
-        )
+        fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
+        ax.add_patch(plt.Circle((0, 0), radius.to_value(u.arcsec), color="0.95"))
 
-        result.x
+        for day in range(5):
+            rotated = utu.rotation.rotate(
+                position=meridian,
+                time=time,
+                time_out=time + day * u.day,
+            )
+            na.plt.plot(rotated.x, rotated.y, ax=ax, axis="y", label=f"{day} d")
+
+        ax.legend()
+        ax.set_aspect("equal")
+        ax.set_xlabel(f"helioprojective $x$ ({u.arcsec:latex_inline})")
+        ax.set_ylabel(f"helioprojective $y$ ({u.arcsec:latex_inline})");
     """
     if num is not None and num < 1:  # pragma: nocover
         raise ValueError(f"{num=} must be at least one")
