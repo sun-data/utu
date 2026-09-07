@@ -57,6 +57,8 @@ intersphinx_mapping = {
     "named_arrays": ("https://named-arrays.readthedocs.io/en/stable", None),
     "fiasco": ("https://fiasco.readthedocs.io/en/stable", None),
     "sunpy": ("https://docs.sunpy.org/en/stable", None),
+    "matplotlib": ("https://matplotlib.org/stable", None),
+    "adjustText": ("https://adjusttext.readthedocs.io/en/latest", None),
 }
 
 codeautolink_custom_blocks = {"jupyter-execute": None}

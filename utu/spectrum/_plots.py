@@ -71,7 +71,9 @@ def stem(
 
     Returns
     -------
-    The label of each line that was labelled, in the order they were drawn.
+    list[matplotlib.text.Text]
+        The label of each line that was labelled, in the order they were
+        drawn.
 
     Examples
     --------
