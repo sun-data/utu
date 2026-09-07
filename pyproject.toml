@@ -22,6 +22,7 @@ dependencies = [
     "adjustText",
     "named-arrays~=2.8",
     "fiasco~=0.8.2",
+    "sunpy~=8.0",
 ]
 dynamic = ["version"]
 
