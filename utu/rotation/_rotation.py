@@ -1,5 +1,6 @@
 """Differential rotation of helioprojective coordinates."""
 
+import math
 from typing import Literal
 
 import astropy.coordinates
@@ -12,6 +13,18 @@ import sunpy.coordinates
 __all__ = [
     "rotate",
 ]
+
+_spacing = 1 * u.hour
+"""
+How far apart to put the times at which the rotation is computed exactly,
+when the caller does not say how many of them there should be.
+
+The interpolation error grows as the square of this, so it is the spacing
+and not the number of times which has to be held fixed as the span of an
+observation grows. An hour is worth about 0.002 arcsec over a day and 0.010
+arcsec over a whole disk transit, which is inside a pixel of any instrument
+likely to ask.
+"""
 
 
 def _observer(time: astropy.time.Time) -> astropy.coordinates.SkyCoord:
@@ -54,7 +67,7 @@ def rotate(
     position: na.AbstractCartesian2dVectorArray,
     time: astropy.time.Time | na.AbstractScalar,
     time_out: astropy.time.Time,
-    num: int = 3,
+    num: None | int = None,
     off_disk: Literal["nan", "static"] = "nan",
     observer: None | astropy.coordinates.SkyCoord = None,
     observer_out: None | astropy.coordinates.SkyCoord = None,
@@ -79,6 +92,9 @@ def rotate(
     num
         The number of times at which to evaluate the rotation exactly.
         The rest is interpolated. See the notes below.
+        If :obj:`None` (the default), enough of them are used to space them
+        an hour apart, which is one for a raster and a few hundred for an
+        observation which follows a feature across the disk.
     off_disk
         What to do with points which miss the solar disk, and so have no
         surface to be carried along.
@@ -119,14 +135,22 @@ def rotate(
     Since the rotation of any one point is smooth and nearly linear in time,
     this function instead rotates every point at `num` times spanning the
     range of `time`, and interpolates each point between the two surrounding
-    ones. Against an exact per-step calculation for a 400-step raster over an
-    hour, two of these give a worst-case error of 0.010 arcsec, three give
-    0.004 arcsec, and five give 0.002 arcsec, which for reference is a
-    hundredth of an IRIS pixel. Three is the default because the error is
-    already far below where anything else in a pointing is uncertain. The
-    error grows with the span of `time`, so raise `num` when rotating
-    observations taken hours apart, and pass ``num=1`` to skip the
-    interpolation when every point shares a time.
+    ones.
+
+    What that costs in accuracy is set by how far apart those times are, not
+    by how many of them there are, and it grows as the square of the spacing.
+    A fixed `num` is therefore only ever right for one length of observation.
+    Against an exact calculation at every step, three times spanning the
+    range are worth 0.004 arcsec over an hour but 0.22 arcsec over a day and
+    25 arcsec over a week, which is a way to be badly and quietly wrong about
+    a long observation. Holding the spacing at an hour instead costs 0.002
+    arcsec over a day and 0.010 arcsec over a disk transit.
+
+    So `num` is chosen from the span of `time` unless it is given, and what
+    it is chosen to be is ``_spacing`` apart. A raster wants two, a mosaic
+    taking a day wants twenty-five, and following a feature from one limb to
+    the other wants a few hundred, which is the right price for the answer.
+    Pass ``num=1`` to skip the interpolation when every point shares a time.
 
     Examples
     --------
@@ -169,7 +193,7 @@ def rotate(
 
         result.x
     """
-    if num < 1:  # pragma: nocover
+    if num is not None and num < 1:  # pragma: nocover
         raise ValueError(f"{num=} must be at least one")
 
     if off_disk not in ("nan", "static"):  # pragma: nocover
@@ -198,10 +222,22 @@ def rotate(
     if observer_out is None:
         observer_out = _observer(time_out)
 
-    # The times at which the rotation is computed exactly. A single one is
-    # enough if every point shares a time, and then there is nothing to
-    # interpolate between.
-    if num == 1 or jd.min() == jd.max():
+    # The times at which the rotation is computed exactly. Enough of them to
+    # be `_spacing` apart, unless the caller said how many to use. A single
+    # one is enough if every point shares a time, and then there is nothing
+    # to interpolate between.
+    span = (jd.max() - jd.min()) * u.day
+
+    if num is None:
+        # Rounded before the ceiling, so that a span which is a whole number
+        # of `_spacing` does not gain a time it does not need. A Julian date
+        # is a number near two and a half million, so the difference of two
+        # of them is only good to about forty microseconds, and an hour comes
+        # out of it as a shade over an hour.
+        ratio = float((span / _spacing).to_value(u.dimensionless_unscaled))
+        num = max(math.ceil(round(ratio, 6)) + 1, 2)
+
+    if num == 1 or span == 0:
         anchor = np.array([(jd.min() + jd.max()) / 2])
     else:
         anchor = np.linspace(jd.min(), jd.max(), num)

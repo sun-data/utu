@@ -205,6 +205,91 @@ def test_rotate_interpolation_accuracy():
     assert error[5] <= error[3]
 
 
+@pytest.mark.parametrize(
+    argnames="span,expected",
+    argvalues=[
+        (0 * u.hour, 2),
+        (1 * u.hour, 2),
+        (6 * u.hour, 7),
+        (24 * u.hour, 25),
+    ],
+)
+def test_rotate_num_from_span(span: u.Quantity, expected: int):
+    """
+    Left to itself, the rotation is computed at times an hour apart.
+
+    There is no way to ask the result how many were used, so it is compared
+    against asking for that many, which must give the same answer to the last
+    bit, and against asking for one fewer, which must not.
+    """
+    axis = "x"
+    num_point = 8
+
+    position = na.Cartesian2dVectorArray(
+        x=na.linspace(-300, 300, axis=axis, num=num_point) * u.arcsec,
+        y=0 * u.arcsec,
+    )
+    time = na.ScalarArray(
+        ndarray=_time + np.linspace(0, span.to_value(u.hour), num_point) * u.hour,
+        axes=(axis,),
+    )
+
+    kwargs = dict(position=position, time=time, time_out=_time + 1 * u.day)
+
+    automatic = utu.rotation.rotate(**kwargs).x.ndarray.to_value(u.arcsec)
+    asked = utu.rotation.rotate(**kwargs, num=expected).x.ndarray.to_value(u.arcsec)
+
+    assert np.allclose(automatic, asked, rtol=0, atol=1e-12)
+
+    if expected > 2:
+        fewer = utu.rotation.rotate(**kwargs, num=expected - 1)
+        assert not np.allclose(
+            automatic,
+            fewer.x.ndarray.to_value(u.arcsec),
+            rtol=0,
+            atol=1e-12,
+        )
+
+
+def test_rotate_num_from_span_long():
+    """
+    A long observation stays accurate without being asked to.
+
+    Three times spanning the range, which used to be the default, are worth
+    a quarter of an arcsecond over a day. Spacing them an hour apart instead
+    has to do far better than that, and better than a tenth of an IRIS pixel.
+    """
+    axis = "x"
+    num_step = 25
+
+    position = na.Cartesian2dVectorArray(
+        x=na.linspace(-300, 300, axis=axis, num=num_step) * u.arcsec,
+        y=na.linspace(-200, 200, axis="y", num=3) * u.arcsec,
+    )
+    time = na.ScalarArray(
+        ndarray=_time + np.linspace(0, 24, num_step) * u.hour,
+        axes=(axis,),
+    )
+
+    kwargs = dict(position=position, time=time, time_out=_time + 12 * u.hour)
+
+    exact = utu.rotation.rotate(**kwargs, num=num_step)
+
+    def error(result):
+        return np.nanmax(
+            np.hypot(
+                (result.x - exact.x).ndarray.to_value(u.arcsec),
+                (result.y - exact.y).ndarray.to_value(u.arcsec),
+            )
+        )
+
+    automatic = error(utu.rotation.rotate(**kwargs))
+    three = error(utu.rotation.rotate(**kwargs, num=3))
+
+    assert automatic < 0.033, "inside a tenth of an IRIS pixel"
+    assert automatic < three / 10, "and far better than a fixed three"
+
+
 def test_rotate_num_one():
     """
     One anchor uses the middle of the time range and does not interpolate.
