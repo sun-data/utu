@@ -56,6 +56,7 @@ intersphinx_mapping = {
     "astropy": ("https://docs.astropy.org/en/stable", None),
     "named_arrays": ("https://named-arrays.readthedocs.io/en/stable", None),
     "fiasco": ("https://fiasco.readthedocs.io/en/stable", None),
+    "sunpy": ("https://docs.sunpy.org/en/stable", None),
 }
 
 codeautolink_custom_blocks = {"jupyter-execute": None}
