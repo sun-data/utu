@@ -132,6 +132,7 @@ def _pixel(
     step_large: float,
     chi2_target: float,
     tolerance: float,
+    floor: float,
     dem: np.ndarray,
     s: np.ndarray,
     exp_s: np.ndarray,
@@ -153,15 +154,15 @@ def _pixel(
     """
     num_channel, num_temperature = rmat.shape
 
-    # The initial guess is the flat DEM which best fits the data
+    # The initial guess is the flat DEM which best fits the data, floored
     numerator = 0.0
     denominator = 0.0
     for i in range(num_channel):
         x = data_raw[i]
         data[i] = x if (x != x or x > 0.0) else 0.0
         inverse_error[i] = 1.0 / error[i]
-        floor = data[i] if (data[i] != data[i] or data[i] > 1.0e-2) else 1.0e-2
-        numerator += rvec[i] * (floor / error[i] ** 2)
+        floored = data[i] if (data[i] != data[i] or data[i] > floor) else floor
+        numerator += rvec[i] * (floored / error[i] ** 2)
         denominator += (rvec[i] / error[i]) ** 2
     s_initial = np.log(numerator / denominator)
     for j in range(num_temperature):
@@ -258,6 +259,7 @@ def plowman(
     step_large: float,
     chi2_target: float,
     tolerance: float,
+    floor: float,
     num_chunks: int,
     dems: np.ndarray,
     chi2: np.ndarray,
@@ -268,6 +270,7 @@ def plowman(
     ``data`` and ``errors`` are ``(pixel, channel)``, ``rmat`` is
     ``(channel, temperature)``, ``regmat`` is ``(temperature, temperature)``,
     ``dems`` is ``(pixel, temperature)``, and ``chi2`` is ``(pixel,)``.
+    ``floor`` is in the units of ``data``.
 
     The pixels are split into ``num_chunks`` contiguous chunks, each of which
     allocates its work arrays once. It is passed in rather than computed here
@@ -304,6 +307,7 @@ def plowman(
                 step_large,
                 chi2_target,
                 tolerance,
+                floor,
                 dems[p],
                 s,
                 exp_s,

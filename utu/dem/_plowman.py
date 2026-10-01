@@ -1,5 +1,7 @@
 """The regularized DEM inversion of Plowman & Caspi (2020)."""
 
+from typing import cast
+
 import astropy.units as u
 import named_arrays as na
 import numba
@@ -10,6 +12,24 @@ from . import _plowman_kernel
 __all__ = [
     "plowman",
 ]
+
+
+def _ndarray(
+    a: u.Quantity | na.AbstractScalar,
+    shape: dict[str, int],
+    unit: u.UnitBase | None,
+) -> np.ndarray:
+    """
+    ``a`` broadcast to ``shape``, with its axes in the order of ``shape``, as
+    64-bit floats in ``unit``.
+
+    A plain number is taken to be in ``unit`` already.
+    """
+    array = cast(na.AbstractScalarArray, na.as_named_array(a))
+    x = na.broadcast_to(array, shape).ndarray_aligned(tuple(shape))
+    if isinstance(x, u.Quantity):
+        x = x.to_value(unit or u.dimensionless_unscaled)
+    return np.ascontiguousarray(x, dtype=np.float64)
 
 
 def _matrices(
@@ -65,7 +85,8 @@ def plowman(
     steps: tuple[float, float] = (0.1, 0.5),
     iterations_max: int = 100,
     iterations_min: int = 5,
-) -> tuple[na.FunctionArray[na.ScalarArray, na.ScalarArray], na.ScalarArray]:
+    floor: u.Quantity | float = 0.01 * u.DN / u.s,
+) -> tuple[na.FunctionArray[na.AbstractScalar, na.ScalarArray], na.ScalarArray]:
     r"""
     Invert intensities for a differential emission measure (DEM), the way
     Plowman & Caspi (2020) do.
@@ -120,6 +141,13 @@ def plowman(
     iterations_min
         The number of steps to take before giving up on a pixel whose
         :math:`\chi^2` has stalled.
+    floor
+        The least intensity the initial guess assumes in any channel. It must
+        be convertible to the units of ``intensity``, or be a plain number if
+        ``intensity`` has none. It changes the result only for pixels with
+        almost no signal, and only through where the iteration starts. The
+        default is the floor of the reference, which fits counts rather than
+        rates and floors them at 0.01 DN, for a one-second exposure.
 
     Returns
     -------
@@ -127,8 +155,8 @@ def plowman(
         The DEM at each temperature of ``response``, per unit
         :math:`\log_{10} T`, in units of ``intensity`` over the units of the
         outputs of ``response``: :math:`\mathrm{cm^{-5}}` for responses in
-        :math:`\mathrm{DN\,cm^5\,s^{-1}\,pix^{-1}}` and intensities in
-        :math:`\mathrm{DN\,s^{-1}\,pix^{-1}}`.
+        :math:`\mathrm{DN\,cm^5\,s^{-1}}` and intensities in
+        :math:`\mathrm{DN\,s^{-1}}`.
     chi2
         The reduced :math:`\chi^2` of each pixel, or :math:`-1` where the
         first step failed (a NaN or non-positive uncertainty, for instance),
@@ -161,11 +189,10 @@ def plowman(
     in either implementation.
 
     Negative intensities are set to zero before the fit, as in the
-    reference. One more detail of the reference is kept although it depends
-    on the units: the initial guess, a flat DEM fit by least squares, floors
-    the intensities at 0.01 in the units of ``intensity``. The floor changes
-    the result only for pixels with almost no signal, and only through where
-    the iteration starts.
+    reference. The initial guess is the flat DEM which best fits the
+    intensities, each raised to at least ``floor``. In the reference, the
+    floor is a bare 0.01 in whatever units the data are in, so here it is a
+    parameter with units.
 
     The kernel takes about 20 to 30 microseconds per pixel on one core, some
     40 times faster than the reference, and runs on every core: a whole AIA
@@ -220,9 +247,6 @@ def plowman(
         ax.set_title(f"reduced $\\chi^2$ = {chi2.ndarray:.2f}")
         ax.legend();
     """
-    intensity = na.as_named_array(intensity)
-    uncertainty = na.as_named_array(uncertainty)
-
     temperature = response.inputs
     shape_temperature = na.shape(temperature)
     if tuple(shape_temperature) != (axis_temperature,):
@@ -245,27 +269,22 @@ def plowman(
             f"`intensity` has {shape[axis_channel]} channels but `response` "
             f"has {shape_response[axis_channel]}"
         )
+    num_channel = shape[axis_channel]
     shape_pixel = {axis: num for axis, num in shape.items() if axis != axis_channel}
-    axes = (*shape_pixel, axis_channel)
+    shape_data = {**shape_pixel, axis_channel: num_channel}
+    shape_tresp = {
+        axis_temperature: shape_response[axis_temperature],
+        axis_channel: num_channel,
+    }
 
-    unit = na.unit(intensity)
-    unit_response = na.unit(response.outputs)
+    unit = cast("u.UnitBase | None", na.unit(intensity))
+    unit_response = cast("u.UnitBase | None", na.unit(response.outputs))
 
-    def value(a: na.AbstractScalar, axes: tuple[str, ...], unit) -> np.ndarray:
-        shape_a = {ax: shape[ax] if ax in shape else shape_response[ax] for ax in axes}
-        x = na.broadcast_to(na.as_named_array(a), shape_a).ndarray_aligned(axes)
-        if isinstance(x, u.Quantity):
-            x = x.to_value(unit if unit is not None else u.dimensionless_unscaled)
-        return np.ascontiguousarray(x, dtype=np.float64)
-
-    data = value(intensity, axes, unit).reshape(-1, shape[axis_channel])
-    errors = value(uncertainty, axes, unit).reshape(-1, shape[axis_channel])
-    tresp = value(response.outputs, (axis_temperature, axis_channel), unit_response)
-
-    t = na.as_named_array(temperature).ndarray_aligned((axis_temperature,))
-    if isinstance(t, u.Quantity):
-        t = t.to_value(u.K)
-    logt = np.log10(np.asarray(t, dtype=np.float64))
+    data = _ndarray(intensity, shape_data, unit).reshape(-1, num_channel)
+    errors = _ndarray(uncertainty, shape_data, unit).reshape(-1, num_channel)
+    tresp = _ndarray(response.outputs, shape_tresp, unit_response)
+    logt = np.log10(_ndarray(temperature, shape_temperature, u.K))
+    floor = cast(float, u.Quantity(floor).to_value(unit or u.dimensionless_unscaled))
 
     rmat, regmat, rvec = _matrices(logt, tresp, smoothness)
 
@@ -284,6 +303,7 @@ def plowman(
         float(steps[1]),
         float(chi2_target),
         float(tolerance),
+        floor,
         max(1, min(num_pixel, 64 * numba.get_num_threads())),
         dems,
         chi2,
