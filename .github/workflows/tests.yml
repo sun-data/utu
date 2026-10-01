@@ -85,9 +85,13 @@ jobs:
               ask_before=False,
           )
           "
+      # Coverage cannot see inside a function compiled by Numba, so this job
+      # runs the kernels of `utu.dem` as plain Python. The matrix above runs
+      # them compiled, which is the path anyone uses.
       - name: Test with pytest
         env:
           MPLBACKEND: "agg"
+          NUMBA_DISABLE_JIT: 1
         run: pytest --cov=. --cov-report=xml
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

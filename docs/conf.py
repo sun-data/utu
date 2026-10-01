@@ -53,6 +53,8 @@ master_doc = "index"
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy", None),
+    "numba": ("https://numba.readthedocs.io/en/stable", None),
     "astropy": ("https://docs.astropy.org/en/stable", None),
     "named_arrays": ("https://named-arrays.readthedocs.io/en/stable", None),
     "fiasco": ("https://fiasco.readthedocs.io/en/stable", None),
