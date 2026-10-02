@@ -21,3 +21,20 @@ The documentation is at [utu.readthedocs.io](https://utu.readthedocs.io/en/lates
 The emission lines of an optically thin plasma, computed from the CHIANTI
 atomic database through [fiasco](https://github.com/wtbarnes/fiasco), and
 returned as named arrays.
+
+## Citation
+
+If you use utu in your research, please cite it.
+The citation metadata is kept in [`CITATION.cff`](https://github.com/sun-data/utu/blob/main/CITATION.cff),
+which the "Cite this repository" button on GitHub can export as BibTeX or APA.
+Please include the version of utu that you used,
+which is given by `importlib.metadata.version("utu")`.
+
+```bibtex
+@software{utu,
+  author = {Smart, Roy T.},
+  title = {utu},
+  version = {X.Y.Z},
+  url = {https://github.com/sun-data/utu},
+}
+```
