@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use utu in your research, please cite it using these metadata."
+type: software
+title: utu
+abstract: >-
+  utu is a Python library of solar physics utilities built on named-arrays,
+  named for the Sumerian god of the sun. Its utilities include the emission
+  lines of an optically thin plasma, computed from the CHIANTI atomic
+  database, and the differential rotation of the solar surface. Inputs and
+  results are named arrays, so they carry physical units and broadcast
+  against each other by axis name.
+authors:
+  - family-names: Smart
+    given-names: Roy T.
+    orcid: "https://orcid.org/0000-0002-9997-5515"
+repository-code: "https://github.com/sun-data/utu"
+url: "https://utu.readthedocs.io"
+license: BSD-3-Clause
+keywords:
+  - solar physics
+  - named arrays

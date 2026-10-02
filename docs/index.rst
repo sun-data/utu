@@ -30,6 +30,27 @@ API Reference
 
     utu
 
+Citation
+========
+
+If you use :mod:`utu` in your research, please cite it.
+The citation metadata is kept in
+`CITATION.cff <https://github.com/sun-data/utu/blob/main/CITATION.cff>`_,
+which the "Cite this repository" button on the
+`GitHub page <https://github.com/sun-data/utu>`_
+can export as BibTeX or APA.
+Please include the version of :mod:`utu` that you used,
+which is given by ``importlib.metadata.version("utu")``.
+
+.. code-block:: bibtex
+
+    @software{utu,
+      author = {Smart, Roy T.},
+      title = {utu},
+      version = {X.Y.Z},
+      url = {https://github.com/sun-data/utu},
+    }
+
 Indices and tables
 ==================
 
