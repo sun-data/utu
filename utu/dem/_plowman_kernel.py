@@ -34,9 +34,12 @@ clipped like any other.
 ``contract`` and ``reassoc`` let the compiler fuse multiply-adds and reorder
 the sums in the dot products, which is a third faster and moves the result
 by about :math:`10^{-12}` relative, below the rounding error the reference
-itself accumulates. The remaining fast-math flags are left off, because
-``nnan`` and ``ninf`` would allow the compiler to delete the checks which
-decide that a pixel has failed.
+itself accumulates. ``reassoc`` also lets it simplify ``exp(log(x))`` to
+``x``, which loses the NaN of the logarithm of a negative number, so the one
+place which takes a logarithm, the initial guess, checks for that itself.
+The remaining fast-math flags are left off, because ``nnan`` and ``ninf``
+would allow the compiler to delete the checks which decide that a pixel has
+failed.
 """
 
 
@@ -154,6 +157,14 @@ def _pixel(
     """
     num_channel, num_temperature = rmat.shape
 
+    # An uncertainty which is not positive fails the pixel. The reference
+    # fails on NaN and zero the same way, but takes a negative one as positive.
+    for i in range(num_channel):
+        if not error[i] > 0.0:
+            for j in range(num_temperature):
+                dem[j] = np.nan
+            return -1.0
+
     # The initial guess is the flat DEM which best fits the data, floored
     numerator = 0.0
     denominator = 0.0
@@ -164,7 +175,12 @@ def _pixel(
         floored = data[i] if (data[i] != data[i] or data[i] > floor) else floor
         numerator += rvec[i] * (floored / error[i] ** 2)
         denominator += (rvec[i] / error[i]) ** 2
-    s_initial = np.log(numerator / denominator)
+    ratio = numerator / denominator
+    # exp(log(x)) compiles to x, which would turn the NaN of the logarithm of
+    # a negative ratio back into a number, and the pixel would iterate on it
+    if not ratio >= 0.0:
+        ratio = np.nan
+    s_initial = np.log(ratio)
     for j in range(num_temperature):
         s[j] = s_initial
         exp_s[j] = np.exp(s_initial)

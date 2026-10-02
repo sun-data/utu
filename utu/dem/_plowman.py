@@ -17,19 +17,32 @@ __all__ = [
 def _ndarray(
     a: u.Quantity | na.AbstractScalar,
     shape: dict[str, int],
-    unit: u.UnitBase | None,
+    unit: u.UnitBase,
 ) -> np.ndarray:
     """
     ``a`` broadcast to ``shape``, with its axes in the order of ``shape``, as
     64-bit floats in ``unit``.
 
-    A plain number is taken to be in ``unit`` already.
+    A plain number is dimensionless, so it is an error unless ``unit`` is too.
     """
     array = cast(na.AbstractScalarArray, na.as_named_array(a))
     x = na.broadcast_to(array, shape).ndarray_aligned(tuple(shape))
-    if isinstance(x, u.Quantity):
-        x = x.to_value(unit or u.dimensionless_unscaled)
-    return np.ascontiguousarray(x, dtype=np.float64)
+    value = cast(np.ndarray, u.Quantity(x, copy=False).to_value(unit))
+    return np.ascontiguousarray(value, dtype=np.float64)
+
+
+def _part(
+    a: u.Quantity | na.AbstractScalar,
+    distribution: bool,
+) -> na.AbstractScalar:
+    """
+    The distribution of ``a`` if ``distribution``, otherwise its nominal
+    value, if it is uncertain; ``a`` itself if it is not.
+    """
+    array = na.as_named_array(a)
+    if isinstance(array, na.AbstractUncertainScalarArray):
+        array = array.distribution if distribution else na.as_named_array(array.nominal)
+    return cast(na.AbstractScalar, array)
 
 
 def _matrices(
@@ -50,7 +63,9 @@ def _matrices(
     mass matrix of those triangle functions, and the regularization is their
     stiffness matrix. Both are tridiagonal, and both are written with the
     operations of the reference in the same order, since a rounding error in
-    a matrix is carried through every step of every pixel.
+    a matrix is carried through every step of every pixel. That, and the
+    kernel taking plain arrays, is why this is :mod:`numpy` rather than
+    :mod:`named_arrays`.
     """
     num_temperature, num_channel = response.shape
     dt = logt[1:] - logt[:-1]
@@ -85,8 +100,8 @@ def plowman(
     steps: tuple[float, float] = (0.1, 0.5),
     iterations_max: int = 100,
     iterations_min: int = 5,
-    floor: u.Quantity | float = 0.01 * u.DN / u.s,
-) -> tuple[na.FunctionArray[na.AbstractScalar, na.ScalarArray], na.ScalarArray]:
+    floor: u.Quantity | float | None = None,
+) -> tuple[na.FunctionArray[na.AbstractScalar, na.AbstractScalar], na.AbstractScalar]:
     r"""
     Invert intensities for a differential emission measure (DEM), the way
     Plowman & Caspi (2020) do.
@@ -104,6 +119,11 @@ def plowman(
     compiled kernel which reproduces the reference implementation to
     rounding error. See the notes below.
 
+    If ``intensity``, ``uncertainty``, or the outputs of ``response`` are
+    uncertain, so are the DEM and :math:`\chi^2`: their nominal values are
+    those of the nominal inputs, and each sample of the distribution is
+    inverted as one more pixel.
+
     Parameters
     ----------
     intensity
@@ -113,10 +133,11 @@ def plowman(
         The one-sigma uncertainty of ``intensity``, in the same units.
     response
         The temperature response of each channel: its inputs are the
-        temperatures along ``axis_temperature``, and its outputs are the
-        responses along ``axis_temperature`` and ``axis_channel``, in units
-        of ``intensity`` per unit emission measure. The channels must be in
-        the same order as those of ``intensity``.
+        temperatures along ``axis_temperature``, increasing and with units of
+        temperature, and its outputs are the responses along
+        ``axis_temperature`` and ``axis_channel``, in units of ``intensity``
+        per unit emission measure. The channels must be in the same order as
+        those of ``intensity``.
     axis_channel
         The name of the axis along the channels of ``intensity`` and
         ``response``.
@@ -142,12 +163,11 @@ def plowman(
         The number of steps to take before giving up on a pixel whose
         :math:`\chi^2` has stalled.
     floor
-        The least intensity the initial guess assumes in any channel. It must
-        be convertible to the units of ``intensity``, or be a plain number if
-        ``intensity`` has none. It changes the result only for pixels with
-        almost no signal, and only through where the iteration starts. The
-        default is the floor of the reference, which fits counts rather than
-        rates and floors them at 0.01 DN, for a one-second exposure.
+        The least intensity the initial guess assumes in any channel, which
+        must be positive and in units convertible to those of ``intensity``.
+        It changes the result only for pixels with almost no signal, and only
+        through where the iteration starts. If :obj:`None`, it is 0.01 in the
+        units of ``intensity``, as in the reference.
 
     Returns
     -------
@@ -159,8 +179,8 @@ def plowman(
         :math:`\mathrm{DN\,s^{-1}}`.
     chi2
         The reduced :math:`\chi^2` of each pixel, or :math:`-1` where the
-        first step failed (a NaN or non-positive uncertainty, for instance),
-        in which case the DEM is NaN.
+        first step failed, in which case the DEM is NaN. A NaN or non-positive
+        uncertainty fails a pixel this way.
 
     Notes
     -----
@@ -191,8 +211,9 @@ def plowman(
     Negative intensities are set to zero before the fit, as in the
     reference. The initial guess is the flat DEM which best fits the
     intensities, each raised to at least ``floor``. In the reference, the
-    floor is a bare 0.01 in whatever units the data are in, so here it is a
-    parameter with units.
+    floor is a bare 0.01 in whatever units the data are in, which is the
+    default here too, but it can be given in any units. The reference takes
+    a negative uncertainty as positive, where this fails the pixel.
 
     The kernel takes about 20 to 30 microseconds per pixel on one core, some
     40 times faster than the reference, and runs on every core: a whole AIA
@@ -247,6 +268,43 @@ def plowman(
         ax.set_title(f"reduced $\\chi^2$ = {chi2.ndarray:.2f}")
         ax.legend();
     """
+    arrays = (intensity, uncertainty, response.outputs)
+    if any(isinstance(a, na.AbstractUncertainScalarArray) for a in arrays):
+        (dem_nominal, chi2_nominal), (dem_distribution, chi2_distribution) = (
+            plowman(
+                intensity=_part(intensity, distribution),
+                uncertainty=_part(uncertainty, distribution),
+                response=na.FunctionArray(
+                    inputs=response.inputs,
+                    outputs=_part(response.outputs, distribution),
+                ),
+                axis_channel=axis_channel,
+                axis_temperature=axis_temperature,
+                smoothness=smoothness,
+                chi2_target=chi2_target,
+                tolerance=tolerance,
+                steps=steps,
+                iterations_max=iterations_max,
+                iterations_min=iterations_min,
+                floor=floor,
+            )
+            for distribution in (False, True)
+        )
+        # the parts are certain, so each result is a plain scalar array
+        return (
+            na.FunctionArray(
+                inputs=response.inputs,
+                outputs=na.UncertainScalarArray(
+                    nominal=cast(na.ScalarArray, dem_nominal.outputs),
+                    distribution=cast(na.ScalarArray, dem_distribution.outputs),
+                ),
+            ),
+            na.UncertainScalarArray(
+                nominal=cast(na.ScalarArray, chi2_nominal),
+                distribution=cast(na.ScalarArray, chi2_distribution),
+            ),
+        )
+
     temperature = response.inputs
     shape_temperature = na.shape(temperature)
     if tuple(shape_temperature) != (axis_temperature,):
@@ -260,15 +318,28 @@ def plowman(
             f"the outputs of `response` must have axes {axis_channel!r} and "
             f"{axis_temperature!r} and no others, got {tuple(shape_response)}"
         )
+    if shape_response[axis_temperature] != shape_temperature[axis_temperature]:
+        raise ValueError(
+            f"`response` has {shape_temperature[axis_temperature]} temperatures "
+            f"but {shape_response[axis_temperature]} responses to them"
+        )
 
-    shape = na.shape_broadcasted(intensity, uncertainty)
-    if axis_channel not in shape:
+    if axis_channel not in na.shape(intensity):
         raise ValueError(f"`intensity` has no axis {axis_channel!r}")
+    shape = na.shape_broadcasted(intensity, uncertainty)
+    if axis_temperature in shape:
+        raise ValueError(
+            f"`intensity` and `uncertainty` must not have the axis "
+            f"{axis_temperature!r} of the temperatures"
+        )
     if shape[axis_channel] != shape_response[axis_channel]:
         raise ValueError(
             f"`intensity` has {shape[axis_channel]} channels but `response` "
             f"has {shape_response[axis_channel]}"
         )
+    if not smoothness > 0:
+        raise ValueError(f"`smoothness` must be positive, got {smoothness}")
+
     num_channel = shape[axis_channel]
     shape_pixel = {axis: num for axis, num in shape.items() if axis != axis_channel}
     shape_data = {**shape_pixel, axis_channel: num_channel}
@@ -277,14 +348,24 @@ def plowman(
         axis_channel: num_channel,
     }
 
-    unit = cast("u.UnitBase | None", na.unit(intensity))
-    unit_response = cast("u.UnitBase | None", na.unit(response.outputs))
+    unit = cast(u.UnitBase, na.unit_normalized(intensity))
+    unit_response = cast(u.UnitBase, na.unit_normalized(response.outputs))
+
+    t = _ndarray(temperature, shape_temperature, u.K)
+    if not (t.size > 1 and np.all(t > 0) and np.all(np.diff(t) > 0)):
+        raise ValueError(
+            "`response` must have at least two temperatures, positive and " "increasing"
+        )
+    if floor is None:
+        floor = 0.01 * unit
+    floor = cast(float, u.Quantity(floor).to_value(unit))
+    if not floor > 0:
+        raise ValueError(f"`floor` must be positive, got {floor}")
 
     data = _ndarray(intensity, shape_data, unit).reshape(-1, num_channel)
     errors = _ndarray(uncertainty, shape_data, unit).reshape(-1, num_channel)
     tresp = _ndarray(response.outputs, shape_tresp, unit_response)
-    logt = np.log10(_ndarray(temperature, shape_temperature, u.K))
-    floor = cast(float, u.Quantity(floor).to_value(unit or u.dimensionless_unscaled))
+    logt = np.log10(t)
 
     rmat, regmat, rvec = _matrices(logt, tresp, smoothness)
 
@@ -309,16 +390,9 @@ def plowman(
         chi2,
     )
 
-    unit_dem = None
-    if unit is not None or unit_response is not None:
-        unit_dem = (unit or u.dimensionless_unscaled) / (
-            unit_response or u.dimensionless_unscaled
-        )
-
-    shape_dem = (*shape_pixel.values(), logt.size)
-    dems = dems.reshape(shape_dem)
-    if unit_dem is not None:
-        dems = dems << unit_dem
+    dems = dems.reshape(*shape_pixel.values(), logt.size)
+    if na.unit(intensity) is not None or na.unit(response.outputs) is not None:
+        dems = dems << unit / unit_response
 
     return (
         na.FunctionArray(

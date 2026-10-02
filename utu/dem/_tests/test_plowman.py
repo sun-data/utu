@@ -6,9 +6,17 @@ import numpy as np
 import pytest
 
 import utu
+from utu.dem import _plowman_kernel
+from utu.dem._plowman import _matrices
 
 _logt = np.round(np.arange(5.5, 7.0 + 1e-9, 0.05), 2)
 _peaks = np.array([5.7, 5.95, 6.15, 6.3, 6.5, 6.9])
+
+_unit = u.DN / u.s
+"""The units of the intensities of these tests."""
+
+_unit_response = u.DN * u.cm**5 / u.s
+"""The units of the responses of these tests."""
 
 
 def _response() -> np.ndarray:
@@ -103,10 +111,14 @@ def _reference(
             mmat = Rij * np.outer(1.0 / err, np.exp(s))
             amat = np.matmul(mmat.T, mmat) + regmat
             # where scipy.linalg.cho_factor raises, since it checks for
-            # infinities and NaNs before factoring
+            # infinities and NaNs before factoring, and the reference
+            # catches whatever it raises
             if not np.all(np.isfinite(amat)):
                 break
-            low = np.linalg.cholesky(amat)
+            try:
+                low = np.linalg.cholesky(amat)
+            except np.linalg.LinAlgError:
+                break
             c2p = np.mean((dat0 - np.dot(Rij, np.exp(s))) ** 2 / err**2)
             solution = np.linalg.solve(low.T, np.linalg.solve(low, mmat.T @ dat))
             deltas = solution - s
@@ -133,25 +145,50 @@ def _reference(
     return dems, chi2
 
 
+def _arguments(**overrides: Any) -> dict[str, Any]:
+    """
+    The arguments of :func:`utu.dem.plowman` for two random pixels, with any
+    of them replaced by ``overrides``.
+    """
+    intensity, uncertainty = _observation(num=2)
+    arguments = dict(
+        intensity=na.ScalarArray(intensity * _unit, axes=("pixel", "channel")),
+        uncertainty=na.ScalarArray(uncertainty * _unit, axes=("pixel", "channel")),
+        response=na.FunctionArray(
+            inputs=na.ScalarArray(10**_logt * u.K, axes="temperature"),
+            outputs=na.ScalarArray(
+                _response() * _unit_response,
+                axes=("temperature", "channel"),
+            ),
+        ),
+        axis_channel="channel",
+        axis_temperature="temperature",
+    )
+    return arguments | overrides
+
+
 def _plowman(
     intensity: np.ndarray,
     uncertainty: np.ndarray,
+    tresp: np.ndarray | None = None,
     **kwargs: Any,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    :func:`utu.dem.plowman` on ``(pixel, channel)`` arrays in DN/s.
+    :func:`utu.dem.plowman` on ``(pixel, channel)`` arrays in DN/s, with the
+    responses ``tresp``, or those of :func:`_response`.
 
     Returns the DEMs, ``(pixel, temperature)``, in inverse centimeters to the
     fifth, and the reduced :math:`\\chi^2` of each pixel.
     """
-    unit = u.DN / u.s
+    if tresp is None:
+        tresp = _response()
     dem, chi2 = utu.dem.plowman(
-        intensity=na.ScalarArray(intensity * unit, axes=("pixel", "channel")),
-        uncertainty=na.ScalarArray(uncertainty * unit, axes=("pixel", "channel")),
+        intensity=na.ScalarArray(intensity * _unit, axes=("pixel", "channel")),
+        uncertainty=na.ScalarArray(uncertainty * _unit, axes=("pixel", "channel")),
         response=na.FunctionArray(
             inputs=na.ScalarArray(10**_logt * u.K, axes="temperature"),
             outputs=na.ScalarArray(
-                _response() * u.DN * u.cm**5 / u.s,
+                tresp * _unit_response,
                 axes=("temperature", "channel"),
             ),
         ),
@@ -159,7 +196,9 @@ def _plowman(
         axis_temperature="temperature",
         **kwargs,
     )
-    found = u.Quantity(dem.outputs.ndarray_aligned(("pixel", "temperature")))
+    outputs = cast(na.ScalarArray, dem.outputs)
+    found = u.Quantity(outputs.ndarray_aligned(("pixel", "temperature")))
+    chi2 = cast(na.ScalarArray, chi2)
     return cast(np.ndarray, found.to_value(u.cm**-5)), chi2.ndarray_aligned(("pixel",))
 
 
@@ -231,26 +270,25 @@ def test_plowman_recovers() -> None:
     peak = _logt[np.argmax(found, axis=-1)]
     assert np.all(found > 0)
     assert np.all(chi2 < 1.1)
-    assert np.all(np.abs(peak - center[:, 0]) < 0.3)
-    assert np.allclose(em_found, em_true, rtol=0.5)
+    assert np.all(np.abs(peak - center[:, 0]) < 0.25)
+    assert np.allclose(em_found, em_true, rtol=0.4)
 
 
 def test_plowman_axes() -> None:
     """Every axis but the channel is a separate pixel, and they come back."""
     intensity, uncertainty = _observation(num=12)
-    unit = u.DN / u.s
 
     dem, chi2 = utu.dem.plowman(
         intensity=na.ScalarArray(
-            intensity.reshape(3, 4, 6) * unit,
+            intensity.reshape(3, 4, 6) * _unit,
             axes=("y", "x", "channel"),
         ),
         # one uncertainty per channel, broadcast against every pixel
-        uncertainty=na.ScalarArray(uncertainty.mean(0) * unit, axes="channel"),
+        uncertainty=na.ScalarArray(uncertainty.mean(0) * _unit, axes="channel"),
         response=na.FunctionArray(
             inputs=na.ScalarArray(10**_logt * u.K, axes="temperature"),
             outputs=na.ScalarArray(
-                _response().T * u.DN * u.cm**5 / u.s,
+                _response().T * _unit_response,
                 axes=("channel", "temperature"),
             ),
         ),
@@ -264,25 +302,156 @@ def test_plowman_axes() -> None:
     assert chi2.shape == dict(y=3, x=4)
 
 
-def test_plowman_failure() -> None:
+@pytest.mark.parametrize(
+    argnames="factor",
+    argvalues=[np.nan, 0, -1],
+)
+def test_plowman_failure(factor: float) -> None:
     """
-    A pixel whose uncertainty is not a number fails, as in the reference.
+    A pixel whose uncertainty is NaN, zero, or negative in one channel fails:
+    its :math:`\\chi^2` is -1 and its DEM is NaN. The other pixels are
+    unaffected.
 
-    Its first step cannot be taken, so its :math:`\\chi^2` is left at -1
-    and its DEM at the exponential of a NaN initial guess. The other pixels
-    are unaffected.
+    The reference fails on a NaN or zero uncertainty the same way, but takes
+    a negative one as positive.
     """
     intensity, uncertainty = _observation(num=3)
-    uncertainty[1, 2] = np.nan
+    uncertainty[1, 2] *= factor
 
     dem, chi2 = _plowman(intensity, uncertainty)
-    dem_expected, chi2_expected = _reference(intensity, uncertainty, _logt, _response())
 
+    good = [0, 2]
+    dem_expected, chi2_expected = _reference(
+        intensity[good],
+        uncertainty[good],
+        _logt,
+        _response(),
+    )
     assert chi2[1] == -1
     assert np.all(np.isnan(dem[1]))
-    assert np.all(chi2[[0, 2]] > 0)
-    assert np.allclose(dem, dem_expected, rtol=1e-6, atol=0, equal_nan=True)
-    assert np.allclose(chi2, chi2_expected, rtol=1e-6, atol=0)
+    assert np.allclose(dem[good], dem_expected, rtol=1e-6, atol=0)
+    assert np.allclose(chi2[good], chi2_expected, rtol=1e-6, atol=0)
+    if not factor < 0:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dem_reference, chi2_reference = _reference(
+                intensity,
+                uncertainty,
+                _logt,
+                _response(),
+            )
+        assert chi2_reference[1] == -1
+        assert np.all(np.isnan(dem_reference[1]))
+
+
+def test_plowman_negative_response() -> None:
+    """
+    Negative responses put the logarithm of a negative number into the
+    initial guess, which fails every pixel, as in the reference.
+
+    Compiled with fast math, ``exp(log(x))`` is simplified to ``x``, which
+    once turned that NaN back into a number for the pixels to iterate on.
+    """
+    intensity, uncertainty = _observation(num=4)
+
+    dem, chi2 = _plowman(intensity, uncertainty, tresp=-_response())
+
+    with np.errstate(invalid="ignore"):
+        dem_expected, chi2_expected = _reference(
+            intensity,
+            uncertainty,
+            _logt,
+            -_response(),
+        )
+    assert np.all(chi2 == -1)
+    assert np.all(np.isnan(dem))
+    assert np.array_equal(chi2, chi2_expected)
+    assert np.array_equal(dem, dem_expected, equal_nan=True)
+
+
+def test_plowman_singular() -> None:
+    """
+    A pixel whose linear system is singular in floating point fails at that
+    step, as in the reference, keeping the last good step.
+
+    With an uncertainty of :math:`10^{-12}` of the signal, the regularization
+    is too small to register against the data, so the first system is
+    singular and the DEM is the initial guess.
+    """
+    intensity, uncertainty = _observation(num=4)
+    uncertainty = 1e-12 * np.abs(intensity)
+
+    dem, chi2 = _plowman(intensity, uncertainty)
+
+    dem_expected, chi2_expected = _reference(
+        intensity,
+        uncertainty,
+        _logt,
+        _response(),
+    )
+    assert np.all(chi2 == -1)
+    assert np.array_equal(chi2, chi2_expected)
+    assert np.allclose(dem, dem_expected, rtol=1e-12, atol=0)
+
+
+def test_plowman_cholesky() -> None:
+    """
+    The factorization fails on a finite matrix which is not positive
+    definite, where :func:`numpy.linalg.cholesky` raises, and agrees with it
+    on one which is.
+    """
+    definite = np.array([[2.0, 1.0], [1.0, 2.0]])
+    indefinite = np.array([[1.0, 2.0], [2.0, 1.0]])
+
+    with pytest.raises(np.linalg.LinAlgError):
+        np.linalg.cholesky(indefinite)
+    assert not _plowman_kernel._cholesky(indefinite.copy())
+
+    factor = definite.copy()
+    assert _plowman_kernel._cholesky(factor)
+    assert np.allclose(np.tril(factor), np.linalg.cholesky(definite))
+
+
+def test_plowman_chunks() -> None:
+    """
+    Pixels which share a chunk, and so its work arrays, give the same results
+    as pixels which have one each, including those after a pixel which fails.
+
+    The kernel reuses the work arrays of a chunk from one pixel to the next,
+    so a step which read one before writing it would leak from a pixel into
+    its neighbour.
+    """
+    num = 12
+    intensity, uncertainty = _observation(num=num)
+    uncertainty[5, 2] = np.nan
+    uncertainty[6] *= 1e-12
+    rmat, regmat, rvec = _matrices(_logt, _response(), smoothness=8)
+
+    results = []
+    for num_chunks in (1, num):
+        dems = np.zeros((num, _logt.size))
+        chi2 = np.full(num, -1.0)
+        _plowman_kernel.plowman(
+            intensity,
+            uncertainty,
+            rmat,
+            regmat,
+            rvec,
+            100,
+            5,
+            0.1,
+            0.5,
+            1.0,
+            0.1,
+            0.01,
+            num_chunks,
+            dems,
+            chi2,
+        )
+        results.append((dems, chi2))
+
+    (dems_shared, chi2_shared), (dems_own, chi2_own) = results
+    assert np.array_equal(dems_shared, dems_own, equal_nan=True)
+    assert np.array_equal(chi2_shared, chi2_own)
 
 
 def test_plowman_floor() -> None:
@@ -312,111 +481,229 @@ def test_plowman_floor() -> None:
     assert not np.allclose(dem, dem_default, rtol=1e-3, atol=0)
 
 
-def test_plowman_no_channel() -> None:
-    """An intensity without the axis of the channels is an error."""
-    _, uncertainty = _observation(num=2)
-    with pytest.raises(ValueError, match="no axis"):
-        utu.dem.plowman(
-            intensity=na.ScalarArray(np.ones(2), axes="pixel"),
-            uncertainty=na.ScalarArray(uncertainty[:, 0], axes="pixel"),
-            response=na.FunctionArray(
-                inputs=na.ScalarArray(10**_logt, axes="temperature"),
-                outputs=na.ScalarArray(_response(), axes=("temperature", "channel")),
+def test_plowman_units() -> None:
+    """
+    Intensities and responses per pixel give the same DEM as those without,
+    the default floor included, which is 0.01 in the units of the
+    intensities whatever those are.
+    """
+    intensity, uncertainty = _observation(num=4)
+    intensity[:, :3] = 0.005
+    per_pixel = 1 / u.pix
+
+    dem, chi2 = utu.dem.plowman(
+        **_arguments(
+            intensity=na.ScalarArray(
+                intensity * _unit * per_pixel,
+                axes=("pixel", "channel"),
             ),
-            axis_channel="channel",
-            axis_temperature="temperature",
+            uncertainty=na.ScalarArray(
+                uncertainty * _unit * per_pixel,
+                axes=("pixel", "channel"),
+            ),
+            response=na.FunctionArray(
+                inputs=na.ScalarArray(10**_logt * u.K, axes="temperature"),
+                outputs=na.ScalarArray(
+                    _response() * _unit_response * per_pixel,
+                    axes=("temperature", "channel"),
+                ),
+            ),
         )
+    )
+
+    dem_expected, chi2_expected = _plowman(intensity, uncertainty)
+    outputs = cast(na.ScalarArray, dem.outputs)
+    found = u.Quantity(outputs.ndarray_aligned(("pixel", "temperature")))
+    chi2 = cast(na.ScalarArray, chi2)
+    assert np.array_equal(found.to_value(u.cm**-5), dem_expected)
+    assert np.array_equal(chi2.ndarray_aligned(("pixel",)), chi2_expected)
 
 
 @pytest.mark.parametrize(
     argnames="floor",
-    argvalues=[0.01, 0.01 * u.dimensionless_unscaled],
+    argvalues=[None, 0.01, 0.01 * u.dimensionless_unscaled],
 )
-def test_plowman_unitless(floor: float | u.Quantity) -> None:
+def test_plowman_unitless(floor: None | float | u.Quantity) -> None:
     """Plain numbers go in, with a plain floor, and plain numbers come out."""
     intensity, uncertainty = _observation(num=2)
 
     dem, chi2 = utu.dem.plowman(
-        intensity=na.ScalarArray(intensity, axes=("pixel", "channel")),
-        uncertainty=na.ScalarArray(uncertainty, axes=("pixel", "channel")),
-        response=na.FunctionArray(
-            inputs=na.ScalarArray(10**_logt, axes="temperature"),
-            outputs=na.ScalarArray(_response(), axes=("temperature", "channel")),
-        ),
-        axis_channel="channel",
-        axis_temperature="temperature",
-        floor=floor,
+        **_arguments(
+            intensity=na.ScalarArray(intensity, axes=("pixel", "channel")),
+            uncertainty=na.ScalarArray(uncertainty, axes=("pixel", "channel")),
+            response=na.FunctionArray(
+                inputs=na.ScalarArray(10**_logt * u.K, axes="temperature"),
+                outputs=na.ScalarArray(_response(), axes=("temperature", "channel")),
+            ),
+            floor=floor,
+        )
     )
 
-    found = dem.outputs.ndarray_aligned(("pixel", "temperature"))
+    outputs = cast(na.ScalarArray, dem.outputs)
+    found = outputs.ndarray_aligned(("pixel", "temperature"))
     expected, _ = _plowman(intensity, uncertainty)
     assert not isinstance(found, u.Quantity)
     assert np.allclose(found, expected)
 
 
-@pytest.mark.parametrize(
-    argnames="intensity_unit,floor",
-    argvalues=[
-        # the default floor is in DN/s, which plain numbers are not
-        (None, 0.01 * u.DN / u.s),
-        (u.DN / u.s, 0.01),
-        (u.DN / u.s, 0.01 * u.cm),
-    ],
-)
-def test_plowman_floor_units(
-    intensity_unit: u.UnitBase | None,
-    floor: float | u.Quantity,
-) -> None:
-    """A floor in units other than those of the intensities is an error."""
-    intensity, uncertainty = _observation(num=2)
-    unit = 1 if intensity_unit is None else intensity_unit
-    with pytest.raises(u.UnitConversionError):
-        utu.dem.plowman(
-            intensity=na.ScalarArray(intensity * unit, axes=("pixel", "channel")),
-            uncertainty=na.ScalarArray(uncertainty * unit, axes=("pixel", "channel")),
-            response=na.FunctionArray(
-                inputs=na.ScalarArray(10**_logt, axes="temperature"),
-                outputs=na.ScalarArray(_response(), axes=("temperature", "channel")),
+def test_plowman_uncertain() -> None:
+    """
+    An uncertain intensity gives an uncertain DEM and :math:`\\chi^2`, whose
+    nominal values are those of the nominal intensity, and whose samples are
+    those of the samples of the intensity.
+    """
+    num_sample = 4
+    axis = na.UncertainScalarArray.axis_distribution
+    intensity, uncertainty = _observation(num=3)
+    rng = np.random.default_rng(2)
+    samples = intensity + rng.normal(size=(num_sample, *intensity.shape)) * uncertainty
+
+    dem, chi2 = utu.dem.plowman(
+        **_arguments(
+            intensity=na.UncertainScalarArray(
+                nominal=na.ScalarArray(intensity * _unit, axes=("pixel", "channel")),
+                distribution=na.ScalarArray(
+                    samples * _unit,
+                    axes=(axis, "pixel", "channel"),
+                ),
             ),
-            axis_channel="channel",
-            axis_temperature="temperature",
-            floor=floor,
+            uncertainty=na.ScalarArray(uncertainty * _unit, axes=("pixel", "channel")),
         )
+    )
+
+    dem_nominal, chi2_nominal = _plowman(intensity, uncertainty)
+    dem_distribution, chi2_distribution = _plowman(
+        samples.reshape(-1, _peaks.size),
+        np.broadcast_to(uncertainty, samples.shape).reshape(-1, _peaks.size),
+    )
+    dem_expected = na.UncertainScalarArray(
+        nominal=na.ScalarArray(dem_nominal / u.cm**5, axes=("pixel", "temperature")),
+        distribution=na.ScalarArray(
+            dem_distribution.reshape(num_sample, -1, _logt.size) / u.cm**5,
+            axes=(axis, "pixel", "temperature"),
+        ),
+    )
+    chi2_expected = na.UncertainScalarArray(
+        nominal=na.ScalarArray(chi2_nominal, axes="pixel"),
+        distribution=na.ScalarArray(
+            chi2_distribution.reshape(num_sample, -1),
+            axes=(axis, "pixel"),
+        ),
+    )
+    assert isinstance(dem.outputs, na.UncertainScalarArray)
+    assert np.all(dem.outputs == dem_expected)
+    assert np.all(chi2 == chi2_expected)
+
+
+_intensity, _uncertainty = _observation(num=2)
+_temperature = u.Quantity(10**_logt, u.K)
+
+
+def _function(
+    temperature: u.Quantity | np.ndarray,
+    response: np.ndarray,
+    axes: tuple[str, ...] = ("temperature", "channel"),
+    axes_temperature: tuple[str, ...] = ("temperature",),
+) -> na.FunctionArray:
+    """A response for :func:`utu.dem.plowman` from plain arrays."""
+    return na.FunctionArray(
+        inputs=na.ScalarArray(temperature, axes=axes_temperature),
+        outputs=na.ScalarArray(response * _unit_response, axes=axes),
+    )
 
 
 @pytest.mark.parametrize(
-    argnames="response",
+    argnames="overrides,match",
     argvalues=[
-        # five channels for six intensities
-        na.FunctionArray(
-            inputs=na.ScalarArray(10**_logt, axes="temperature"),
-            outputs=na.ScalarArray(_response()[:, :5], axes=("temperature", "channel")),
+        (
+            dict(response=_function(_temperature, _response()[:, :5])),
+            "channels",
         ),
-        # an extra axis on the response
-        na.FunctionArray(
-            inputs=na.ScalarArray(10**_logt, axes="temperature"),
-            outputs=na.ScalarArray(
-                _response()[None],
-                axes=("extra", "temperature", "channel"),
+        (
+            dict(
+                response=_function(
+                    _temperature,
+                    _response()[None],
+                    axes=("extra", "temperature", "channel"),
+                ),
             ),
+            "no others",
         ),
-        # temperatures which vary along the channels
-        na.FunctionArray(
-            inputs=na.ScalarArray(
-                10 ** (_logt[:, None] + np.zeros(6)),
-                axes=("temperature", "channel"),
+        (
+            dict(
+                response=_function(
+                    _temperature[:, None] + np.zeros(6) * u.K,
+                    _response(),
+                    axes_temperature=("temperature", "channel"),
+                ),
             ),
-            outputs=na.ScalarArray(_response(), axes=("temperature", "channel")),
+            "alone",
+        ),
+        (
+            dict(response=_function(_temperature[:30], _response())),
+            "30 temperatures but 31",
+        ),
+        (
+            dict(response=_function(_temperature[::-1], _response())),
+            "increasing",
+        ),
+        (
+            dict(response=_function(_temperature[:1], _response()[:1])),
+            "at least two",
+        ),
+        (
+            dict(
+                response=_function(
+                    u.Quantity(np.concatenate([[0], 10 ** _logt[1:]]), u.K),
+                    _response(),
+                ),
+            ),
+            "positive",
+        ),
+        # temperatures given as log10 T, without units
+        (
+            dict(response=_function(_logt, _response())),
+            "not convertible",
+        ),
+        # an intensity without channels, which the uncertainty has
+        (
+            dict(intensity=na.ScalarArray(_intensity[:, 0] * _unit, axes="pixel")),
+            "no axis 'channel'",
+        ),
+        (
+            dict(
+                intensity=na.ScalarArray(
+                    _intensity * _unit,
+                    axes=("temperature", "channel"),
+                ),
+                uncertainty=na.ScalarArray(
+                    _uncertainty * _unit,
+                    axes=("temperature", "channel"),
+                ),
+            ),
+            "must not have the axis 'temperature'",
+        ),
+        (dict(smoothness=0), "`smoothness` must be positive"),
+        (dict(floor=0 * _unit), "`floor` must be positive"),
+        # a floor, or an uncertainty, in units other than the intensity's
+        (dict(floor=0.01), "not convertible"),
+        (dict(floor=0.01 * u.cm), "not convertible"),
+        (
+            dict(uncertainty=na.ScalarArray(_uncertainty, axes=("pixel", "channel"))),
+            "not convertible",
+        ),
+        # plain numbers, with the default floor of the units of another test
+        (
+            dict(
+                intensity=na.ScalarArray(_intensity, axes=("pixel", "channel")),
+                uncertainty=na.ScalarArray(_uncertainty, axes=("pixel", "channel")),
+                floor=0.01 * _unit,
+            ),
+            "not convertible",
         ),
     ],
 )
-def test_plowman_invalid(response: na.FunctionArray) -> None:
-    intensity, uncertainty = _observation(num=2)
-    with pytest.raises(ValueError):
-        utu.dem.plowman(
-            intensity=na.ScalarArray(intensity, axes=("pixel", "channel")),
-            uncertainty=na.ScalarArray(uncertainty, axes=("pixel", "channel")),
-            response=response,
-            axis_channel="channel",
-            axis_temperature="temperature",
-        )
+def test_plowman_invalid(overrides: dict[str, Any], match: str) -> None:
+    """Arguments which cannot be inverted are errors, before anything is."""
+    with pytest.raises(ValueError, match=match):
+        utu.dem.plowman(**_arguments(**overrides))
