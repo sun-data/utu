@@ -16,6 +16,10 @@ authors:
 repository-code: "https://github.com/sun-data/utu"
 url: "https://utu.readthedocs.io"
 license: BSD-3-Clause
+identifiers:
+  - type: doi
+    description: Concept DOI, which always resolves to the latest version
+    value: "10.5281/zenodo.23107787"
 keywords:
   - solar physics
   - named arrays
