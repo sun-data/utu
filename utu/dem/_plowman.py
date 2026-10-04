@@ -1,0 +1,435 @@
+"""The regularized DEM inversion of Plowman & Caspi (2020)."""
+
+from typing import cast
+
+import astropy.units as u
+import named_arrays as na
+import numpy as np
+
+__all__ = [
+    "plowman",
+]
+
+
+def _ndarray(
+    a: u.Quantity | na.AbstractScalar,
+    shape: dict[str, int],
+    unit: u.UnitBase,
+) -> np.ndarray:
+    """
+    ``a`` broadcast to ``shape``, with its axes in the order of ``shape``, as
+    64-bit floats in ``unit``.
+
+    A plain number is dimensionless, so it is an error unless ``unit`` is too.
+    """
+    array = cast(na.AbstractScalarArray, na.as_named_array(a))
+    x = na.broadcast_to(array, shape).ndarray_aligned(tuple(shape))
+    value = cast(np.ndarray, u.Quantity(x, copy=False).to_value(unit))
+    return np.ascontiguousarray(value, dtype=np.float64)
+
+
+def _samples(
+    a: u.Quantity | na.AbstractScalar,
+) -> u.Quantity | na.AbstractScalar:
+    """
+    The nominal value of an uncertain ``a`` followed by the samples of its
+    distribution, along the axis of the distribution, so that one inversion
+    finds both; ``a`` itself if it is certain.
+    """
+    if not isinstance(a, na.AbstractUncertainScalarArray):
+        return a
+    axis = a.axis_distribution
+    nominal = cast(na.AbstractScalarArray, na.as_named_array(a.nominal))
+    nominal = nominal.add_axes(axis)
+    distribution = cast(na.AbstractScalarArray, na.as_named_array(a.distribution))
+    if axis not in distribution.shape:
+        distribution = distribution.add_axes(axis)
+    shape = na.shape_broadcasted(nominal, distribution)
+    result = na.concatenate(
+        [
+            na.broadcast_to(nominal, shape | {axis: 1}),
+            na.broadcast_to(distribution, shape),
+        ],
+        axis=axis,
+    )
+    return cast(na.AbstractScalar, result)
+
+
+def _matrices(
+    logt: np.ndarray,
+    response: np.ndarray,
+    smoothness: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    The matrices of the inversion, from the temperature grid and the responses.
+
+    ``response`` is ``(temperature, channel)``. Returns the matrix mapping
+    the coefficients of the DEM to the data, ``(channel, temperature)``, the
+    regularization matrix, ``(temperature, temperature)``, and the sum of
+    the first over temperature, ``(channel,)``.
+
+    The DEM and the responses are both taken to be piecewise linear between
+    the temperatures of the grid, so the mapping is the response times the
+    mass matrix of those triangle functions, and the regularization is their
+    stiffness matrix. Both are tridiagonal, and both are written with the
+    operations of the reference in the same order, since a rounding error in
+    a matrix is carried through every step of every pixel. That, and the
+    kernel taking plain arrays, is why this is :mod:`numpy` rather than
+    :mod:`named_arrays`.
+    """
+    num_temperature, num_channel = response.shape
+    dt = logt[1:] - logt[:-1]
+    left = np.concatenate([dt, [0]])
+    right = np.concatenate([[0], dt])
+
+    mass = np.diag((left + right) * 2.0) / 6.0
+    mass += np.diag(dt, k=1) / 6.0 + np.diag(dt, k=-1) / 6.0
+
+    inverse_left = np.concatenate([1.0 / dt, [0]])
+    inverse_right = np.concatenate([[0], 1.0 / dt])
+    stiffness = np.diag(inverse_left + inverse_right)
+    stiffness -= np.diag(1.0 / dt, k=1) + np.diag(1.0 / dt, k=-1)
+
+    rmat = np.matmul(response.T, mass)
+    span = logt[num_temperature - 1] - logt[0]
+    regmat = stiffness * num_channel / (smoothness**2 * span)
+    rvec = np.sum(rmat, axis=1)
+
+    return np.ascontiguousarray(rmat), np.ascontiguousarray(regmat), rvec
+
+
+def plowman(
+    intensity: u.Quantity | na.AbstractScalar,
+    uncertainty: u.Quantity | na.AbstractScalar,
+    response: na.FunctionArray[na.AbstractScalar, na.AbstractScalar],
+    axis_channel: str,
+    axis_temperature: str,
+    smoothness: float = 8,
+    chi2_target: float = 1,
+    tolerance: float = 0.1,
+    steps: tuple[float, float] = (0.1, 0.5),
+    iterations_max: int = 100,
+    iterations_min: int = 5,
+    floor: u.Quantity | float | None = None,
+) -> tuple[na.FunctionArray[na.AbstractScalar, na.AbstractScalar], na.AbstractScalar]:
+    r"""
+    Invert intensities for a differential emission measure (DEM), the way
+    Plowman & Caspi (2020) do.
+
+    The DEM is piecewise linear in :math:`\log_{10} T` between the
+    temperatures of ``response``, and is found as the exponential of a
+    piecewise linear function, which makes it positive everywhere without a
+    constraint. The fit is regularized by the square of the derivative of
+    the logarithm of the DEM, which penalizes changes of more than about
+    ``smoothness`` e-foldings per decade of temperature, and is stopped once
+    the reduced :math:`\chi^2` reaches ``chi2_target`` rather than driven
+    below it.
+
+    Each pixel is independent, and they are inverted in parallel by a
+    compiled kernel which reproduces the reference implementation to
+    rounding error. See the notes below.
+
+    If ``intensity`` or ``uncertainty`` is uncertain, so are the DEM and
+    :math:`\chi^2`: their nominal values are those of the nominal inputs, and
+    each sample of the distribution is inverted as one more pixel. The
+    response cannot be uncertain, since every pixel shares it.
+
+    Parameters
+    ----------
+    intensity
+        The observed intensity in each channel. Every axis other than
+        ``axis_channel`` is a separate inversion.
+    uncertainty
+        The one-sigma uncertainty of ``intensity``, in the same units.
+    response
+        The temperature response of each channel: its inputs are the
+        temperatures along ``axis_temperature``, increasing and with units of
+        temperature, and its outputs are the responses along
+        ``axis_temperature`` and ``axis_channel``, in units of ``intensity``
+        per unit emission measure. The channels must be in the same order as
+        those of ``intensity``.
+    axis_channel
+        The name of the axis along the channels of ``intensity`` and
+        ``response``.
+    axis_temperature
+        The name of the axis along the temperatures of ``response``.
+    smoothness
+        The number of e-foldings per decade of temperature which the DEM may
+        change by before the regularization starts to resist, called
+        :math:`\delta_0` (and ``drv_con``) in the paper. Smaller is smoother.
+        The paper finds that anything from 4 to 16 fits AIA data.
+    chi2_target
+        The reduced :math:`\chi^2` the iteration aims for, which must be
+        positive.
+    tolerance
+        How close to ``chi2_target`` is close enough, and how little
+        improvement per unit step counts as having stalled. Must be positive.
+    steps
+        The small and the large fraction of the way to the linearized
+        solution to try at each step, positive and in that order. The step
+        taken is interpolated between them to land on ``chi2_target``.
+    iterations_max
+        The most steps to take for any one pixel, at least one.
+    iterations_min
+        How long to persist with a pixel whose :math:`\chi^2` has stalled: it
+        is given up on after at least ``iterations_min + 2`` steps, which is
+        how the reference counts its ``kcon``.
+    floor
+        The least intensity the initial guess assumes in any channel, which
+        must be positive and in units convertible to those of ``intensity``.
+        It changes the result only for pixels with almost no signal, and only
+        through where the iteration starts. If :obj:`None`, it is 0.01 in the
+        units of ``intensity``, as in the reference.
+
+    Returns
+    -------
+    dem
+        The DEM at each temperature of ``response``, per unit
+        :math:`\log_{10} T`, in units of ``intensity`` over the units of the
+        outputs of ``response``: :math:`\mathrm{cm^{-5}}` for responses in
+        :math:`\mathrm{DN\,cm^5\,s^{-1}}` and intensities in
+        :math:`\mathrm{DN\,s^{-1}}`.
+    chi2
+        The reduced :math:`\chi^2` of each pixel. It is :math:`-1` where the
+        iteration failed before its first step, in which case the DEM is not a
+        fit: it is NaN where an intensity or uncertainty was NaN or an
+        uncertainty was not positive, and the flat initial guess where the
+        first linear system was singular. As in the reference, a step which
+        goes wrong later can leave a NaN. So the pixels to keep are those with
+        ``chi2 >= 0``.
+
+    Notes
+    -----
+    This is ``simple_reg_dem`` from the appendix of `Plowman & Caspi (2020)
+    <https://doi.org/10.3847/1538-4357/abc260>`_, as distributed in
+    `EMToolKit <https://github.com/jeplowman/EMToolKit>`_. Its defaults are
+    those of the code listing
+    in that appendix, which are not the ones its text describes: the text
+    gives 15 initial steps, steps of 0.1 and 0.75, a smoothness of 4, and a
+    tolerance of :math:`10^{-4}`, and describes choosing whichever of the two
+    trial steps has the lower :math:`\chi^2`, whereas the code interpolates
+    between them. The code is what produced the published results, and what
+    is reproduced here.
+
+    Against the reference, the DEMs agree to about :math:`10^{-11}` relative
+    on AIA data and on the random test DEMs of the paper. They do not agree
+    to the last bit, and cannot: the regularization matrix is singular on
+    its own (it does not penalize a constant), and where the data say little
+    the linear systems are close to it, so the rounding errors of any two
+    implementations of the Cholesky factorization grow by orders of
+    magnitude over the iteration. A port of the reference with
+    :mod:`numpy.linalg` in place of :mod:`scipy.linalg` disagrees with it by
+    as much. The worst cases are pixels with no signal, at about
+    :math:`10^{-6}`, and pixels the model cannot fit at all, whose
+    :math:`\chi^2` stays far above the target and whose DEM is meaningless
+    in either implementation.
+
+    Negative intensities are set to zero before the fit, as in the
+    reference. The initial guess is the flat DEM which best fits the
+    intensities, each raised to at least ``floor``. In the reference, the
+    floor is a bare 0.01 in whatever units the data are in, which is the
+    default here too, but it can be given in any units. The reference takes
+    a negative uncertainty as positive, where this fails the pixel.
+
+    The kernel takes about 20 to 30 microseconds per pixel on one core, some
+    40 times faster than the reference, and runs on every core: a whole AIA
+    image of :math:`4096^2` pixels takes about 12 seconds on 24 cores,
+    against about four hours for the reference. The first call compiles
+    the kernel, which takes a few seconds, and caches it to disk for later
+    sessions.
+
+    Examples
+    --------
+    Six channels whose responses peak at different temperatures, observing a
+    plasma whose DEM peaks near 2 MK, with the uncertainty of a second of
+    photon counting, and the DEM recovered from them.
+
+    .. jupyter-execute::
+
+        import astropy.units as u
+        import matplotlib.pyplot as plt
+        import named_arrays as na
+        import numpy as np
+        import utu
+
+        temperature = 10 ** na.linspace(5.5, 7, axis="temperature", num=31) * u.K
+        logt = np.log10(temperature.value)
+
+        # Gaussian responses in log T, one per channel
+        peak = na.linspace(5.7, 6.9, axis="channel", num=6)
+        response = na.FunctionArray(
+            inputs=temperature,
+            outputs=1e-25 * np.exp(-(((logt - peak) / 0.15) ** 2)) * u.DN * u.cm**5 / u.s,
+        )
+
+        # the true DEM, and the intensities it would produce
+        dem_true = 3e28 * np.exp(-(((logt - 6.3) / 0.12) ** 2)) / u.cm**5
+        intensity = (response.outputs * dem_true).sum("temperature") * 0.05
+        uncertainty = np.sqrt(intensity * u.DN / u.s) + 1 * u.DN / u.s
+
+        dem, chi2 = utu.dem.plowman(
+            intensity=intensity,
+            uncertainty=uncertainty,
+            response=response,
+            axis_channel="channel",
+            axis_temperature="temperature",
+        )
+
+        fig, ax = plt.subplots(constrained_layout=True)
+        na.plt.plot(temperature, dem_true, ax=ax, axis="temperature", label="true")
+        na.plt.plot(dem.inputs, dem.outputs, ax=ax, axis="temperature", label="recovered")
+        ax.set_xscale("log")
+        ax.set_xlabel(f"temperature ({temperature.unit:latex_inline})")
+        ax.set_ylabel(f"DEM ({dem.outputs.unit:latex_inline})")
+        ax.set_title(f"reduced $\\chi^2$ = {chi2.ndarray:.2f}")
+        ax.legend();
+    """
+    if any(
+        isinstance(a, na.AbstractUncertainScalarArray)
+        for a in (response.inputs, response.outputs)
+    ):
+        raise ValueError(
+            "`response` cannot be uncertain, since every pixel shares it; "
+            "invert with each sample of it separately instead"
+        )
+
+    uncertain = any(
+        isinstance(a, na.AbstractUncertainScalarArray) for a in (intensity, uncertainty)
+    )
+    axis_distribution = na.UncertainScalarArray.axis_distribution
+    if uncertain:
+        intensity = _samples(intensity)
+        uncertainty = _samples(uncertainty)
+
+    temperature = response.inputs
+    shape_temperature = na.shape(temperature)
+    if tuple(shape_temperature) != (axis_temperature,):
+        raise ValueError(
+            f"the temperatures of `response` must vary along {axis_temperature!r} "
+            f"alone, got axes {tuple(shape_temperature)}"
+        )
+    shape_response = na.shape(response.outputs)
+    if set(shape_response) != {axis_channel, axis_temperature}:
+        raise ValueError(
+            f"the outputs of `response` must have axes {axis_channel!r} and "
+            f"{axis_temperature!r} and no others, got {tuple(shape_response)}"
+        )
+    if shape_response[axis_temperature] != shape_temperature[axis_temperature]:
+        raise ValueError(
+            f"`response` has {shape_temperature[axis_temperature]} temperatures "
+            f"but {shape_response[axis_temperature]} responses to them"
+        )
+
+    shape_intensity = na.shape(intensity)
+    if axis_channel not in shape_intensity:
+        raise ValueError(f"`intensity` has no axis {axis_channel!r}")
+    # checked on the intensity itself, since one channel would broadcast
+    # against the channels of the uncertainty
+    if shape_intensity[axis_channel] != shape_response[axis_channel]:
+        raise ValueError(
+            f"`intensity` has {shape_intensity[axis_channel]} channels but "
+            f"`response` has {shape_response[axis_channel]}"
+        )
+    shape = na.shape_broadcasted(intensity, uncertainty)
+    if axis_temperature in shape:
+        raise ValueError(
+            f"`intensity` and `uncertainty` must not have the axis "
+            f"{axis_temperature!r} of the temperatures"
+        )
+
+    if not smoothness > 0:
+        raise ValueError(f"`smoothness` must be positive, got {smoothness}")
+    if not chi2_target > 0:
+        raise ValueError(f"`chi2_target` must be positive, got {chi2_target}")
+    if not tolerance > 0:
+        raise ValueError(f"`tolerance` must be positive, got {tolerance}")
+    if not 0 < steps[0] <= steps[1]:
+        raise ValueError(f"`steps` must be positive and increasing, got {steps}")
+    if not iterations_max >= 1:
+        raise ValueError(f"`iterations_max` must be at least 1, got {iterations_max}")
+    if not iterations_min >= 0:
+        raise ValueError(f"`iterations_min` must not be negative, got {iterations_min}")
+
+    num_channel = shape[axis_channel]
+    shape_pixel = {axis: num for axis, num in shape.items() if axis != axis_channel}
+    shape_data = {**shape_pixel, axis_channel: num_channel}
+    shape_tresp = {
+        axis_temperature: shape_response[axis_temperature],
+        axis_channel: num_channel,
+    }
+
+    unit = cast(u.UnitBase, na.unit_normalized(intensity))
+    unit_response = cast(u.UnitBase, na.unit_normalized(response.outputs))
+
+    t = _ndarray(temperature, shape_temperature, u.K)
+    if not (t.size > 1 and np.all(t > 0) and np.all(np.diff(t) > 0)):
+        raise ValueError(
+            "`response` must have at least two temperatures, positive and increasing"
+        )
+    if floor is None:
+        floor = 0.01 * unit
+    floor = cast(float, u.Quantity(floor).to_value(unit))
+    if not floor > 0:
+        raise ValueError(f"`floor` must be positive, got {floor}")
+
+    data = _ndarray(intensity, shape_data, unit).reshape(-1, num_channel)
+    errors = _ndarray(uncertainty, shape_data, unit).reshape(-1, num_channel)
+    tresp = _ndarray(response.outputs, shape_tresp, unit_response)
+    logt = np.log10(t)
+
+    rmat, regmat, rvec = _matrices(logt, tresp, smoothness)
+
+    # imported here rather than with the module, so that importing utu does
+    # not pay for importing numba unless a DEM is wanted
+    import numba
+
+    from . import _plowman_kernel
+
+    num_pixel = data.shape[0]
+    dems = np.zeros((num_pixel, logt.size))
+    chi2 = np.full(num_pixel, -1.0)
+    _plowman_kernel.plowman(
+        data,
+        errors,
+        rmat,
+        regmat,
+        rvec,
+        iterations_max,
+        iterations_min,
+        float(steps[0]),
+        float(steps[1]),
+        float(chi2_target),
+        float(tolerance),
+        floor,
+        max(1, min(num_pixel, numba.get_num_threads())),
+        dems,
+        chi2,
+    )
+
+    dems = dems.reshape(*shape_pixel.values(), logt.size)
+    if na.unit(intensity) is not None or na.unit(response.outputs) is not None:
+        dems = dems << unit / unit_response
+
+    dem = na.ScalarArray(dems, axes=(*shape_pixel, axis_temperature))
+    chi2 = na.ScalarArray(
+        chi2.reshape(tuple(shape_pixel.values())), axes=tuple(shape_pixel)
+    )
+
+    if uncertain:
+        nominal = {axis_distribution: 0}
+        distribution = {axis_distribution: slice(1, None)}
+        return (
+            na.FunctionArray(
+                inputs=temperature,
+                outputs=na.UncertainScalarArray(
+                    nominal=cast(na.ScalarArray, dem[nominal]),
+                    distribution=cast(na.ScalarArray, dem[distribution]),
+                ),
+            ),
+            na.UncertainScalarArray(
+                nominal=cast(na.ScalarArray, chi2[nominal]),
+                distribution=cast(na.ScalarArray, chi2[distribution]),
+            ),
+        )
+
+    return na.FunctionArray(inputs=temperature, outputs=dem), chi2

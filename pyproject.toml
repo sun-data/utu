@@ -21,6 +21,7 @@ dependencies = [
     "matplotlib",
     "adjustText",
     "named-arrays~=2.8",
+    "numba",
     "fiasco~=0.8.2",
     "sunpy~=8.0",
 ]
