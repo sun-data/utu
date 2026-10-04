@@ -221,8 +221,10 @@ def _pixel(
             rhs[j] = x * exp_s[j]
         _cholesky_solve(a, rhs, solution)
 
-        # Limit the largest change of s to 0.5 at the small step
-        largest = 0.0
+        # Limit the largest change of s to 0.5 at the small step. A numpy
+        # float, so that with numba disabled a division by a zero `largest`
+        # gives a NaN, as it does compiled, rather than raising.
+        largest = np.float64(0.0)
         for j in range(num_temperature):
             delta[j] = solution[j] - s[j]
             d = abs(delta[j])
@@ -288,16 +290,19 @@ def plowman(
     ``dems`` is ``(pixel, temperature)``, and ``chi2`` is ``(pixel,)``.
     ``floor`` is in the units of ``data``.
 
-    The pixels are split into ``num_chunks`` contiguous chunks, each of which
-    allocates its work arrays once. It is passed in rather than computed here
-    because asking :mod:`numba` for the number of threads from inside a
-    compiled function makes it impossible to cache.
+    The pixels are dealt into ``num_chunks`` chunks, every ``num_chunks``-th
+    pixel to the same chunk, and each chunk allocates its work arrays once.
+    Dealing them, rather than cutting the image into blocks, matters because
+    :mod:`numba` hands each thread a contiguous block of chunks: in blocks, the
+    threads which drew an active region would do most of the work while the
+    rest sat idle, where dealt, every thread draws pixels from the whole
+    image. ``num_chunks`` is passed in rather than computed here because
+    asking :mod:`numba` for the number of threads from inside a compiled
+    function makes it impossible to cache.
     """
     num_pixel, num_channel = data.shape
     num_temperature = rmat.shape[1]
     for c in numba.prange(num_chunks):
-        start = c * num_pixel // num_chunks
-        stop = (c + 1) * num_pixel // num_chunks
         s = np.empty(num_temperature)
         exp_s = np.empty(num_temperature)
         s_trial = np.empty(num_temperature)
@@ -310,7 +315,7 @@ def plowman(
         data_clipped = np.empty(num_channel)
         inverse_error = np.empty(num_channel)
         data_linear = np.empty(num_channel)
-        for p in range(start, stop):
+        for p in range(c, num_pixel, num_chunks):
             chi2[p] = _pixel(
                 data[p],
                 errors[p],

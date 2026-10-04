@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from typing import Any, cast
 
 import astropy.units as u
@@ -595,6 +597,41 @@ def test_plowman_uncertain() -> None:
     assert np.all(chi2 == chi2_expected)
 
 
+def test_plowman_uncertain_uncertainty() -> None:
+    """
+    An uncertain uncertainty whose distribution has no samples, only its
+    nominal value, gives a DEM with one sample, equal to the nominal DEM.
+    """
+    intensity, uncertainty = _observation(num=3)
+    sigma = na.ScalarArray(uncertainty * _unit, axes=("pixel", "channel"))
+
+    dem, chi2 = utu.dem.plowman(
+        **_arguments(
+            intensity=na.ScalarArray(intensity * _unit, axes=("pixel", "channel")),
+            uncertainty=na.UncertainScalarArray(nominal=sigma, distribution=sigma),
+        )
+    )
+
+    axis = na.UncertainScalarArray.axis_distribution
+    outputs = cast(na.UncertainScalarArray, dem.outputs)
+    chi2 = cast(na.UncertainScalarArray, chi2)
+    assert outputs.distribution.shape[axis] == 1
+    assert np.all(outputs.distribution[{axis: 0}] == outputs.nominal)
+    assert np.all(chi2.distribution[{axis: 0}] == chi2.nominal)
+
+
+def test_plowman_import() -> None:
+    """Importing :mod:`utu` does not import :mod:`numba`, which only a DEM needs."""
+    code = "import sys, utu; print('numba' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
+
+
 _intensity, _uncertainty = _observation(num=2)
 _temperature = u.Quantity(10**_logt, u.K)
 
@@ -701,6 +738,60 @@ def _function(
             ),
             "not convertible",
         ),
+        # one channel, which would broadcast against six uncertainties
+        (
+            dict(
+                intensity=na.ScalarArray(
+                    _intensity[:, :1] * _unit,
+                    axes=("pixel", "channel"),
+                ),
+            ),
+            "has 1 channels",
+        ),
+        # an uncertain response, and uncertain temperatures
+        (
+            dict(
+                response=na.FunctionArray(
+                    inputs=na.ScalarArray(_temperature, axes="temperature"),
+                    outputs=na.UncertainScalarArray(
+                        nominal=na.ScalarArray(
+                            _response() * _unit_response,
+                            axes=("temperature", "channel"),
+                        ),
+                        distribution=na.ScalarArray(
+                            np.stack([_response(), 1.01 * _response()])
+                            * _unit_response,
+                            axes=("_distribution", "temperature", "channel"),
+                        ),
+                    ),
+                ),
+            ),
+            "cannot be uncertain",
+        ),
+        (
+            dict(
+                response=na.FunctionArray(
+                    inputs=na.UncertainScalarArray(
+                        nominal=na.ScalarArray(_temperature, axes="temperature"),
+                        distribution=na.ScalarArray(
+                            np.stack([_temperature, 1.01 * _temperature]),
+                            axes=("_distribution", "temperature"),
+                        ),
+                    ),
+                    outputs=na.ScalarArray(
+                        _response() * _unit_response,
+                        axes=("temperature", "channel"),
+                    ),
+                ),
+            ),
+            "cannot be uncertain",
+        ),
+        (dict(chi2_target=0), "`chi2_target` must be positive"),
+        (dict(tolerance=0), "`tolerance` must be positive"),
+        (dict(steps=(0, 0.5)), "`steps` must be positive and increasing"),
+        (dict(steps=(0.5, 0.1)), "`steps` must be positive and increasing"),
+        (dict(iterations_max=0), "`iterations_max` must be at least 1"),
+        (dict(iterations_min=-1), "`iterations_min` must not be negative"),
     ],
 )
 def test_plowman_invalid(overrides: dict[str, Any], match: str) -> None:
