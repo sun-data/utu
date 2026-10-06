@@ -55,6 +55,35 @@ def test_stem(num_label: None | int):
     plt.close(fig)
 
 
+def test_stem_uncertain():
+    """An uncertain spectrum is drawn and labelled at its nominal value."""
+    unit = spectrum.outputs.unit
+    uncertain = na.FunctionArray(
+        inputs=spectrum.inputs,
+        outputs=na.UncertainScalarArray(
+            nominal=spectrum.outputs,
+            # the brightest line differs between the samples
+            distribution=na.ScalarArray(
+                ndarray=np.array([[10.0, 400.0], [30.0, 20.0], [100.0, 100.0]]) * unit,
+                axes=("line", "_distribution"),
+            ),
+        ),
+    )
+
+    fig, ax = plt.subplots()
+
+    result = utu.spectrum.stem(uncertain, ax=ax, num_label=2)
+
+    assert result[0].get_text().startswith("O V")
+    assert result[1].get_text().startswith("Mg X")
+
+    segments = [s for c in ax.collections for s in c.get_segments()]
+    tops = sorted(s[:, 1].max() for s in segments)
+    assert np.allclose(tops, sorted(spectrum.outputs.ndarray.to_value(unit)))
+
+    plt.close(fig)
+
+
 def test_stem_latex():
     """The name of an ion, as it would be set in a journal."""
     fig, ax = plt.subplots()

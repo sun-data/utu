@@ -397,8 +397,11 @@ def lines(
 
     # Brightest first, carrying the wavelength and the ion of each line along
     # with its intensity. `argsort` gives back the index of each axis by
-    # name, which is what `__getitem__` takes.
-    order = np.argsort(result.outputs, axis=axis)
+    # name, which is what `__getitem__` takes. The order is that of the
+    # nominal intensity, so that an uncertain intensity, from an uncertain
+    # emission measure say, leaves each line in the same place in every
+    # sample, and its wavelength and ion certain.
+    order = np.argsort(na.nominal(result.outputs), axis=axis)
     result = result[order]
 
     return result[{axis: slice(None, None, -1)}]

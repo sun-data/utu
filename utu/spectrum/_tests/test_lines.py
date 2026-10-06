@@ -160,6 +160,42 @@ def test_lines():
 
 
 @needs_database
+def test_lines_uncertain(proton_electron_ratio: u.Quantity):
+    """
+    An uncertain emission measure sorts the lines by their nominal
+    intensity, so that every line is in the same place in every sample.
+    """
+    # A wider window than the one above, with lines of two ions formed at
+    # different temperatures, so that an uncertainty which differs between
+    # temperatures can change the order of the lines.
+    kwargs = dict(
+        temperature=temperature,
+        density=density,
+        wavelength_min=600 * u.AA,
+        wavelength_max=640 * u.AA,
+        ions=["O 5", "Mg 10"],
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    # seeded so that some samples order the lines differently
+    emission_measure_uncertain = na.UniformUncertainScalarArray(
+        nominal=emission_measure,
+        width=0.9 * emission_measure,
+        num_distribution=5,
+        seed=1,
+    )
+
+    result = utu.spectrum.lines(emission_measure=emission_measure_uncertain, **kwargs)
+    expected = utu.spectrum.lines(emission_measure=emission_measure, **kwargs)
+
+    assert isinstance(result.inputs.wavelength, na.ScalarArray)
+    assert isinstance(result.inputs.ion, na.ScalarArray)
+    assert np.all(result.inputs.ion == expected.inputs.ion)
+    assert np.all(result.inputs.wavelength == expected.inputs.wavelength)
+    assert np.allclose(na.nominal(result.outputs), expected.outputs)
+
+
+@needs_database
 def test_lines_ions(
     ions_window: list[str],
     proton_electron_ratio: u.Quantity,
