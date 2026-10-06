@@ -45,7 +45,10 @@ def stem(
         The lines to draw, as :func:`~utu.spectrum.lines` returns them: a
         wavelength and an ion for each line, and its intensity. Every line
         given is drawn, so slice it first to draw fewer.
-        If the intensity is uncertain, its nominal value is drawn.
+        An uncertain spectrum is drawn and labelled at its nominal value,
+        wavelengths included. A line whose nominal intensity is not finite
+        is not drawn, such as one which only some samples of an uncertain
+        selection kept.
     ax
         The axes to draw on. If :obj:`None` (the default), the current axes.
     num_label
@@ -109,7 +112,11 @@ def stem(
 
     # A stem has one height, so an uncertain spectrum is drawn at its nominal
     # value, which also keeps the brightest lines the same lines throughout.
+    # A line which only some samples of an uncertain selection kept, like one
+    # that an uncertain threshold let through, is not in the nominal spectrum,
+    # where its intensity is NaN, so it is not drawn.
     spectrum = na.nominal(spectrum)
+    spectrum = spectrum[np.isfinite(spectrum.outputs)]
 
     kwargs_line = kwargs_line if kwargs_line is not None else {}
     kwargs_text = kwargs_text if kwargs_text is not None else {}

@@ -277,6 +277,12 @@ def lines(
     result, and its intensity is the output, so that sorting or selecting
     lines carries all three together.
 
+    If the intensity is uncertain, from an uncertain emission measure for
+    instance, the lines are in order of their nominal intensity. A list of
+    lines needs a single order to keep the wavelength and the ion of each
+    line certain, so a sample in which an uncertainty that differs between
+    temperatures has changed which line is brighter keeps the nominal order.
+
     Parameters
     ----------
     temperature

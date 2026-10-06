@@ -55,7 +55,7 @@ def test_stem(num_label: None | int):
     plt.close(fig)
 
 
-def test_stem_uncertain():
+def test_stem_uncertain() -> None:
     """An uncertain spectrum is drawn and labelled at its nominal value."""
     unit = spectrum.outputs.unit
     uncertain = na.FunctionArray(
@@ -80,6 +80,55 @@ def test_stem_uncertain():
     segments = [s for c in ax.collections for s in c.get_segments()]
     tops = sorted(s[:, 1].max() for s in segments)
     assert np.allclose(tops, sorted(spectrum.outputs.ndarray.to_value(unit)))
+
+    plt.close(fig)
+
+
+def test_stem_uncertain_unselected() -> None:
+    """
+    A line which only some samples of an uncertain selection kept is NaN in
+    the nominal spectrum, so it is neither drawn nor labelled.
+    """
+    unit = spectrum.outputs.unit
+    # what selecting the lines brighter than 15 gives when the first line is
+    # brighter than that in the second sample only
+    selected = na.FunctionArray(
+        inputs=na.CartesianNdVectorArray(
+            components={
+                "wavelength": na.UncertainScalarArray(
+                    nominal=na.ScalarArray(
+                        np.array([np.nan, 609.8, 629.7]) * u.AA, axes=("line",)
+                    ),
+                    distribution=na.ScalarArray(
+                        ndarray=np.array(
+                            [[np.nan, 584.3], [609.8, 609.8], [629.7, 629.7]]
+                        )
+                        * u.AA,
+                        axes=("line", "_distribution"),
+                    ),
+                ),
+                "ion": spectrum.inputs.ion,
+            },
+        ),
+        outputs=na.UncertainScalarArray(
+            nominal=na.ScalarArray(
+                np.array([np.nan, 30.0, 100.0]) * unit, axes=("line",)
+            ),
+            distribution=na.ScalarArray(
+                ndarray=np.array([[np.nan, 40.0], [30.0, 20.0], [100.0, 100.0]]) * unit,
+                axes=("line", "_distribution"),
+            ),
+        ),
+    )
+
+    fig, ax = plt.subplots()
+
+    result = utu.spectrum.stem(selected, ax=ax)
+
+    assert [t.get_text().split(" ")[0:2] for t in result] == [["O", "V"], ["Mg", "X"]]
+
+    segments = [s for c in ax.collections for s in c.get_segments()]
+    assert len(segments) == 2
 
     plt.close(fig)
 
