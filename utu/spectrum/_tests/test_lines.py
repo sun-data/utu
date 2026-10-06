@@ -160,6 +160,62 @@ def test_lines():
 
 
 @needs_database
+def test_lines_uncertain(proton_electron_ratio: u.Quantity) -> None:
+    """
+    An uncertain emission measure sorts the lines by their nominal
+    intensity, so that every line is in the same place in every sample.
+    """
+    # The first sample is the nominal emission measure, and the others
+    # scale each temperature by a different factor, which can change which
+    # of two lines formed at different temperatures is the brighter. About
+    # one sample in seven does, so there are enough samples for some to.
+    num_temperature = temperature.shape["temperature"]
+    factor = np.random.default_rng(1).uniform(0.1, 1.9, size=(num_temperature, 19))
+    factor = np.concatenate([np.ones((num_temperature, 1)), factor], axis=~0)
+    emission_measure_uncertain = na.UncertainScalarArray(
+        nominal=emission_measure,
+        distribution=na.ScalarArray(
+            ndarray=emission_measure.ndarray[:, np.newaxis] * factor,
+            axes=("temperature", "_distribution"),
+        ),
+    )
+
+    # A wider window than the one above, with lines of two ions formed at
+    # different temperatures.
+    result = utu.spectrum.lines(
+        temperature=temperature,
+        density=density,
+        emission_measure=emission_measure_uncertain,
+        wavelength_min=600 * u.AA,
+        wavelength_max=640 * u.AA,
+        ions=["O 5", "Mg 10"],
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    # the wavelength and the ion of every line are the same in every sample
+    assert isinstance(result.inputs.wavelength, na.ScalarArray)
+    assert isinstance(result.inputs.ion, na.ScalarArray)
+
+    nominal = na.value(result.outputs.nominal).ndarray
+    distribution = na.value(result.outputs.distribution)
+    samples = [
+        distribution[{"_distribution": i}].ndarray
+        for i in range(distribution.shape["_distribution"])
+    ]
+
+    # brightest first, by the nominal intensity
+    assert np.all(np.diff(nominal) <= 0)
+
+    # every sample was moved along with its line, since the first one has
+    # the nominal emission measure and so the nominal order
+    assert np.allclose(samples[0], nominal, rtol=1e-12)
+
+    # and some of the other samples order the lines differently, which is
+    # what makes this a test of the order
+    assert not all(np.all(np.diff(sample) <= 0) for sample in samples[1:])
+
+
+@needs_database
 def test_lines_ions(
     ions_window: list[str],
     proton_electron_ratio: u.Quantity,
