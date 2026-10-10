@@ -41,6 +41,8 @@ def ions(
         worth including.
     kwargs
         Additional arguments passed to :class:`fiasco.Ion`.
+        If ``hdf5_dbase_root`` is among them, the ions are listed from that
+        database too.
 
     Notes
     -----
@@ -116,7 +118,10 @@ def _catalog(
     """
     result = {}
 
-    for name in fiasco.list_ions():
+    # the ions of the database they are read from, not of the default one
+    database = kwargs.get("hdf5_dbase_root")
+
+    for name in fiasco.list_ions(hdf5_dbase_root=database):
         try:
             ion = fiasco.Ion(name, 1 * u.MK, **kwargs)
 

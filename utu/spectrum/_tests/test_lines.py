@@ -1,3 +1,5 @@
+import pathlib
+
 import astropy.units as u
 import fiasco
 import named_arrays as na
@@ -81,6 +83,22 @@ def test_ions(ions_window: list[str], ions_all: list[str]):
 
     # and asking for every ion gives more of them
     assert len(ions_window) < len(ions_all)
+
+
+def test_ions_database(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path):
+    """The ions are listed from the database they are read from."""
+    found = []
+
+    def list_ions(hdf5_dbase_root: object = None, sort: bool = True) -> list[str]:
+        """Record the database the ions are listed from, which has none."""
+        found.append(hdf5_dbase_root)
+        return []
+
+    monkeypatch.setattr(fiasco, "list_ions", list_ions)
+    database = tmp_path / "chianti.h5"
+
+    assert utu.spectrum.ions(hdf5_dbase_root=database) == []
+    assert found == [database]
 
 
 @needs_database
