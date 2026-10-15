@@ -158,13 +158,19 @@ def contribution_function(
     axis: str = "line",
     proton_electron_ratio: None | u.Quantity | na.AbstractScalar = None,
 ) -> na.FunctionArray:
-    """
+    r"""
     Compute the contribution function of every line of an ion.
 
     Returned as a function of wavelength, so that a line and its strength
     cannot come apart. They are separate arrays underneath, of different
     lengths whenever an ion has a two-photon transition, and pairing them by
     hand is a way to label every line with its neighbor's wavelength.
+
+    The contribution function is that of :mod:`fiasco`, which leaves out the
+    ratio of the density of hydrogen to that of electrons. So the emission
+    measure it is multiplied by to find an intensity is
+    :math:`\int n_e n_H \, dh`, not :math:`\int n_e^2 \, dh`, which would
+    overstate the intensity by :math:`n_e / n_H`, about 1.2 in the corona.
 
     Whether the temperatures and the densities are taken in pairs or as a
     grid is decided by their axes. A density which shares the axis of the
@@ -272,7 +278,7 @@ def lines(
     axis: str = "line",
     **kwargs: object,
 ) -> na.FunctionArray:
-    """
+    r"""
     Compute the emission lines of an optically thin plasma, brightest first.
 
     Every line of every ion abundant enough to contribute, with the intensity
@@ -298,7 +304,12 @@ def lines(
         atmosphere for instance; a density on its own axis is every density
         at every temperature.
     emission_measure
-        How much plasma there is at each temperature.
+        How much plasma there is at each temperature,
+        :math:`\int n_e n_H \, dh` through the column in each bin of
+        temperature. It is the product of the densities of electrons and of
+        hydrogen rather than the square of the first, since :mod:`fiasco`
+        leaves the ratio of the two out of the contribution functions, see
+        :func:`contribution_function`.
     wavelength_min
         The shortest wavelength worth computing.
         If :obj:`None` (the default), there is no lower bound.

@@ -7,6 +7,7 @@ from ._lines import (
 )
 from ._names import spectroscopic
 from ._plots import stem
+from ._synthesis import synthesize
 
 __all__ = [
     "contribution_function",
@@ -14,4 +15,5 @@ __all__ = [
     "lines",
     "spectroscopic",
     "stem",
+    "synthesize",
 ]
