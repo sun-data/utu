@@ -59,7 +59,10 @@ density per temperature, and a density on an axis of its own as every density
 at every temperature.
 
 The emission measure is how much material there is at each temperature,
-:math:`\int n_e^2 \, dh` through the column. A real one is measured; this one
+:math:`\int n_e n_H \, dh` through the column. It is the product of the
+densities of electrons and of hydrogen rather than the square of the first,
+since :mod:`fiasco` leaves the ratio of the two out of its contribution
+functions. A real one is measured; this one
 is a Gaussian in :math:`\log T` centred where the transition region emits,
 holding :math:`10^{27}\,\mathrm{cm}^{-5}` of material in all.
 
@@ -185,3 +188,76 @@ radiance computed above has to be put back into one before it can be drawn.
     )
     ax.set_xlabel(f"wavelength ({u.AA:latex_inline})")
     ax.set_ylabel(f"radiance ({radiance.unit:latex_inline})");
+
+
+Line profiles
+-------------
+
+A line is not infinitely narrow. The ions emitting it move, so each photon is
+Doppler shifted by the velocity of its ion along the line of sight, and the
+line is spread over a range of wavelengths about as wide as the motions of
+the plasma: the thermal motion of its ions, any unresolved nonthermal motion,
+and a shift of the whole profile if the plasma is flowing.
+:func:`~utu.spectrum.synthesize` spreads each line into a Gaussian with
+these properties, in bins of velocity around its rest wavelength. The plasma
+at each temperature gets a profile of its own, as wide as the thermal motion
+at that temperature, so the hot and the cool parts of a column can move
+differently.
+
+It takes the contribution functions of an ion as
+:func:`~utu.spectrum.contribution_function` returns them, along with the
+mass of the ion, which sets its thermal width. Here is the
+:math:`\mathrm{O\,V}` line from above, from plasma with no nonthermal
+motion and from plasma with a nonthermal width of
+:math:`20\,\mathrm{km\,s^{-1}}`.
+
+.. jupyter-execute::
+
+    ion = fiasco.Ion("O 5", temperature.ndarray)
+
+    contribution = utu.spectrum.contribution_function(
+        ion=ion,
+        density=density,
+        axis_temperature=axis,
+    )
+
+    index = np.argmax(contribution.outputs.max(axis), axis="line")
+
+    width_nonthermal = na.ScalarArray([0, 20] * u.km / u.s, axes="width")
+
+    result = utu.spectrum.synthesize(
+        contribution=contribution[index],
+        temperature=temperature,
+        mass=ion.mass,
+        emission_measure=emission_measure,
+        velocity=na.linspace(-150, 150, axis="velocity", num=121) * u.km / u.s,
+        width_nonthermal=width_nonthermal,
+        axis_temperature=axis,
+    )
+
+    fig, ax = plt.subplots(figsize=(7, 3.5), constrained_layout=True)
+    na.plt.stairs(
+        result.inputs.wavelength,
+        result.outputs,
+        ax=ax,
+        axis="velocity",
+        label=width_nonthermal,
+    )
+    ax.set_xlabel(f"wavelength ({u.AA:latex_inline})")
+    ax.set_ylabel(f"spectral radiance\n({result.outputs.unit:latex_inline})")
+    ax.legend(title="nonthermal width");
+
+The radiance of each bin is the integral of the profile across it, so
+broadening a line moves its light around without adding to it, and loses
+none of it as long as the bins span the line. Summed over the bins, both
+profiles give the radiance of the line in the table above.
+
+.. jupyter-execute::
+
+    wavelength = result.inputs.wavelength
+    width_bin = (
+        wavelength[{"velocity": slice(1, None)}]
+        - wavelength[{"velocity": slice(None, -1)}]
+    )
+
+    (result.outputs * width_bin).sum("velocity")
