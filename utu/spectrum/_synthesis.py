@@ -12,6 +12,17 @@ __all__ = [
     "synthesize",
 ]
 
+_size_block = 2**25
+"""
+The most elements :func:`synthesize` puts in any one array along the way, a
+quarter of a gigabyte in double precision.
+
+The largest of them is the product of the contribution function, the
+emission measure, and the profile of a block of lines in one bin of
+velocity, at every temperature and in every pixel. The lines are synthesized
+as many at a time as fit in this, and at least one.
+"""
+
 
 def synthesize(
     contribution: na.FunctionArray,
@@ -53,7 +64,9 @@ def synthesize(
     The radiance of each bin of velocity is the integral of the profile
     across it divided by its width in wavelength, not the profile sampled at
     its center. So the sum of the radiance over the bins is the radiance of
-    the line, however coarse the bins, as long as they span the line.
+    the line, however coarse the bins, as long as they span the line. The
+    integral is taken from whichever tail of the profile the bin is in, so
+    it keeps its precision far into the wings.
 
     Parameters
     ----------
@@ -67,16 +80,21 @@ def synthesize(
         :math:`n_e n_H`.
     temperature
         The temperatures of the plasma, along `axis_temperature`: the ones
-        `contribution` was computed at.
+        `contribution` was computed at. They must be positive.
     mass
         The mass of the ion each line belongs to, such as
         :attr:`fiasco.Ion.mass`. Give it along `axis` to synthesize the lines
         of several ions at once.
     emission_measure
-        How much plasma there is at each temperature,
-        :math:`\int n_e n_H \, dh` through the column in each bin of
-        temperature, along `axis_temperature`. Every other axis is carried
-        through to the result, such as the two axes of a map.
+        How much plasma there is in each bin of temperature,
+        :math:`\int n_e n_H \, dh` through the column, along
+        `axis_temperature`. Every other axis is carried through to the
+        result, such as the two axes of a map.
+
+        This is the emission measure of each bin, not the differential
+        emission measure: a DEM per unit :math:`\log_{10} T`, such as
+        :func:`utu.dem.plowman` returns, has the same units, and has to be
+        multiplied by the width of each bin in :math:`\log_{10} T` first.
     velocity
         The vertices of the bins of velocity, along `axis_velocity`. Positive
         velocities are away from the observer, to longer wavelengths.
@@ -94,15 +112,26 @@ def synthesize(
     axis_velocity
         The name of the axis of `velocity`.
     axis
-        The name of the axis along the lines of `contribution`.
+        The name of the axis along the lines of `contribution`. Any other
+        argument which varies along it must have one element along it, or as
+        many as `contribution`.
 
     Returns
     -------
     :
         The spectral radiance of each line in each bin of velocity, along
-        `axis`, `axis_velocity`, and every axis of `emission_measure` but
+        `axis`, `axis_velocity`, and every axis of the other arguments but
         `axis_temperature`. The inputs are the vertices of the bins, as
         wavelengths with the rest wavelength of each line beside them.
+
+    Raises
+    ------
+    ValueError
+        If `velocity` has no axis `axis_velocity` or varies along
+        `axis_temperature`, if `temperature` or the
+        outputs of `contribution` have no axis `axis_temperature`, if a
+        temperature is not positive, or if an argument varies along `axis`
+        differently than `contribution` does.
 
     Notes
     -----
@@ -113,9 +142,12 @@ def synthesize(
     left out, which in the transition region and the corona is a small
     fraction of a milliangstrom, and so is opacity.
 
-    The lines are synthesized one at a time, so that the largest array held
-    at once is the profile of one line at every temperature and in every
-    pixel, rather than that of every line.
+    The result is filled in one bin of velocity and one block of lines at a
+    time, with as many lines in a block as keep the largest array along the
+    way under :data:`_size_block` elements. So a map of many lines needs
+    little more memory than the result itself. Where the profile is the same
+    for every line, because none of `mass`, `shift`, and `width_nonthermal`
+    varies along `axis`, it is computed once for all of them.
 
     Examples
     --------
@@ -178,41 +210,132 @@ def synthesize(
         ax.set_ylabel(f"spectral radiance\n({result.outputs.unit:latex_inline})")
         ax.legend(title="shift");
     """
+    temperature = _scalar(temperature)
+    mass = _scalar(mass)
+    emission_measure = _scalar(emission_measure)
+    velocity = _scalar(velocity).explicit
+    shift = _scalar(shift)
+    width_nonthermal = _scalar(width_nonthermal)
+
+    g = contribution.outputs
     wavelength_rest = contribution.inputs
 
-    arrays = dict(
-        temperature=_scalar(temperature),
-        mass=_scalar(mass),
-        emission_measure=_scalar(emission_measure),
-        velocity=_scalar(velocity),
-        shift=_scalar(shift),
-        width_nonthermal=_scalar(width_nonthermal),
+    if axis_velocity not in na.shape(velocity):
+        raise ValueError(
+            f"`velocity` must have the axis {axis_velocity!r}, "
+            f"got {na.shape(velocity)}."
+        )
+    if axis_temperature in na.shape(velocity):
+        raise ValueError(
+            f"`velocity` must not vary along {axis_temperature!r}, which is "
+            f"summed over, got {na.shape(velocity)}."
+        )
+    for name, a in dict(temperature=temperature, contribution=g).items():
+        if axis_temperature not in na.shape(a):
+            raise ValueError(
+                f"`{name}` must have the axis {axis_temperature!r}, "
+                f"got {na.shape(a)}."
+            )
+    if not np.all(temperature > 0 * u.K):
+        raise ValueError("every temperature must be positive.")
+
+    # The number of lines, or None for a single line without an axis of
+    # lines. Every other argument has to agree with it, or a line would be
+    # profiled with the mass or the motions of another.
+    num_line = na.shape(g).get(axis)
+    profile = dict(
+        mass=mass,
+        velocity=velocity,
+        shift=shift,
+        width_nonthermal=width_nonthermal,
+    )
+    for name, a in (profile | dict(emission_measure=emission_measure)).items():
+        num = na.shape(a).get(axis)
+        if num is None:
+            continue
+        if num_line is None:
+            raise ValueError(
+                f"`{name}` varies along {axis!r}, "
+                f"but `contribution` is a single line."
+            )
+        if num not in (1, num_line):
+            raise ValueError(
+                f"`{name}` has {num} elements along {axis!r}, "
+                f"but `contribution` has {num_line} lines."
+            )
+
+    shape = na.shape_broadcasted(
+        g,
+        wavelength_rest,
+        temperature,
+        emission_measure,
+        *profile.values(),
+    )
+    num_temperature = shape.pop(axis_temperature)
+    num_bin = shape[axis_velocity] - 1
+    shape[axis_velocity] = num_bin
+
+    unit = u.erg / u.cm**2 / u.s / u.sr / u.AA
+    result = na.ScalarArray(
+        ndarray=np.zeros(tuple(shape.values())) << unit,
+        axes=tuple(shape),
     )
 
-    shape = na.shape(contribution.outputs)
-
-    # A single line, such as one picked out of the lines of an ion with an
-    # integer index, has no axis of lines to loop over.
-    if axis not in shape:
-        result = _line(
-            contribution=contribution,
-            **arrays,
-            axis_temperature=axis_temperature,
-            axis_velocity=axis_velocity,
-        )
+    # Enough lines at a time that the product of the contribution function,
+    # the emission measure, and the profile in one bin, at every temperature
+    # and in every pixel, stays under the size of a block.
+    size_line = num_temperature
+    for a, n in shape.items():
+        if a not in (axis, axis_velocity):
+            size_line *= n
+    num_block = max(1, _size_block // size_line)
+    if num_line is None:
+        blocks = [None]
     else:
-        result = na.stack(
-            [
-                _line(
-                    contribution=contribution[{axis: i}],
-                    **{name: a[{axis: i}] for name, a in arrays.items()},
-                    axis_temperature=axis_temperature,
+        blocks = [slice(i, i + num_block) for i in range(0, num_line, num_block)]
+
+    # The profile is the same for every line unless something it depends on
+    # varies along the axis of lines, and is then computed once per bin.
+    shared = all(axis not in na.shape(a) for a in profile.values())
+
+    for k in range(num_bin):
+        index_bin = {axis_velocity: slice(k, k + 2)}
+
+        if shared:
+            fraction_shared = _fraction(
+                temperature=temperature,
+                **{name: a[index_bin] for name, a in profile.items()},
+                axis_velocity=axis_velocity,
+            )
+
+        for block in blocks:
+            index = {} if block is None else {axis: block}
+
+            if shared:
+                fraction = fraction_shared
+            else:
+                fraction = _fraction(
+                    temperature=temperature,
+                    **{
+                        name: _select(a[index_bin], index)
+                        for name, a in profile.items()
+                    },
                     axis_velocity=axis_velocity,
                 )
-                for i in range(shape[axis])
-            ],
-            axis=axis,
-        )
+
+            radiance = g[index] * _select(emission_measure, index) * fraction
+            radiance = radiance.sum(axis_temperature)
+
+            # The width of the bin in wavelength, which turns the radiance in
+            # it into a spectral radiance. The Doppler shift is linear in
+            # velocity, so this is exact, and does not take the difference of
+            # two wavelengths which agree in most of their digits.
+            width = np.diff(_select(velocity[index_bin], index), axis=axis_velocity)
+            width = wavelength_rest[index] * width / astropy.constants.c
+
+            radiance = radiance / width / (4 * np.pi * u.sr)
+
+            result[index | {axis_velocity: slice(k, k + 1)}] = radiance
 
     return na.FunctionArray(
         inputs=na.DopplerVectorArray.from_velocity(
@@ -223,45 +346,62 @@ def synthesize(
     )
 
 
-def _line(
-    contribution: na.FunctionArray,
+def _fraction(
     temperature: na.AbstractScalar,
     mass: na.AbstractScalar,
-    emission_measure: na.AbstractScalar,
     velocity: na.AbstractScalar,
     shift: na.AbstractScalar,
     width_nonthermal: na.AbstractScalar,
-    axis_temperature: str,
     axis_velocity: str,
 ) -> na.AbstractScalar:
     """
-    The spectral radiance of a single line in each bin of velocity.
+    The fraction of the profile of a line which falls in one bin of velocity.
 
-    The arguments are those of :func:`synthesize`, with any axis along the
-    lines already indexed away.
+    `velocity` is the two vertices of the bin, along `axis_velocity`, and the
+    result keeps that axis, with one element.
+
+    The fraction is the difference of the cumulative distribution of the
+    profile at the two vertices. Far into either wing that distribution is
+    within rounding of zero or of one, and the difference of two values near
+    one loses every digit, so it is taken instead from the complementary
+    error function of the tail the bin is in, which keeps its relative
+    precision there.
     """
     width = np.sqrt(
         astropy.constants.k_B * temperature / mass + np.square(width_nonthermal)
     )
 
-    # The fraction of the line which falls in each bin, as the difference of
-    # the cumulative distribution of the profile across the bin.
     z = (velocity - shift) / (np.sqrt(2) * width)
-    cdf = scipy.special.erf(z.to(u.dimensionless_unscaled)) / 2
-    fraction = _diff(cdf, axis_velocity)
+    z = z.to(u.dimensionless_unscaled).value
 
-    radiance = (contribution.outputs * emission_measure * fraction).sum(
-        axis_temperature
-    )
+    z0 = z[{axis_velocity: slice(0, 1)}]
+    z1 = z[{axis_velocity: slice(1, 2)}]
 
-    # The width of each bin in wavelength, which is what turns the radiance in
-    # a bin into a spectral radiance.
-    wavelength = (1 + velocity / astropy.constants.c) * contribution.inputs
-    width_bin = _diff(wavelength, axis_velocity)
+    # +1 if the middle of the bin is above the center of the profile, -1 if
+    # below, so that the error function is evaluated in its own tail
+    side = np.where(z0 + z1 >= 0, 1, -1)
 
-    result = radiance / width_bin / (4 * np.pi * u.sr)
+    erfc0 = scipy.special.erfc(side * z0)
+    erfc1 = scipy.special.erfc(side * z1)
 
-    return result.to(u.erg / u.cm**2 / u.s / u.sr / u.AA)
+    return side * (erfc0 - erfc1) / 2
+
+
+def _select(
+    a: na.AbstractScalar,
+    index: dict[str, slice],
+) -> na.AbstractScalar:
+    """
+    Select a block of lines from an argument of :func:`synthesize`, unless
+    it broadcasts along the axis of lines.
+
+    An argument with one element along that axis is the same for every
+    line, and indexing it with a block past its first element would fail.
+    """
+    for axis in index:
+        if na.shape(a).get(axis, 1) == 1:
+            return a
+    return a[index]
 
 
 def _scalar(
@@ -269,11 +409,3 @@ def _scalar(
 ) -> na.AbstractScalar:
     """A quantity as a named scalar, so that it can be indexed by axis."""
     return cast(na.AbstractScalar, na.as_named_array(a))
-
-
-def _diff(
-    a: na.AbstractScalar,
-    axis: str,
-) -> na.AbstractScalar:
-    """The difference between neighboring vertices along an axis."""
-    return a[{axis: slice(1, None)}] - a[{axis: slice(None, -1)}]

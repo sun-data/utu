@@ -254,10 +254,6 @@ profiles give the radiance of the line in the table above.
 
 .. jupyter-execute::
 
-    wavelength = result.inputs.wavelength
-    width_bin = (
-        wavelength[{"velocity": slice(1, None)}]
-        - wavelength[{"velocity": slice(None, -1)}]
-    )
+    width_bin = np.diff(result.inputs.wavelength, axis="velocity")
 
     (result.outputs * width_bin).sum("velocity")
