@@ -162,23 +162,46 @@ def emission_measure(
         raise ValueError("the temperatures of `dem` must be positive")
     logt = np.log10(temperature.value)
 
-    lower = {axis_temperature: slice(None, -1)}
-    upper = {axis_temperature: slice(1, None)}
-
-    # the width of each interval between neighboring temperatures
-    step = logt[upper] - logt[lower]
-    if not np.all(step > 0):
+    diagonal, off_diagonal = _mass(logt, axis_temperature)
+    if not np.all(off_diagonal > 0):
         raise ValueError("the temperatures of `dem` must be increasing")
 
     d = na.broadcast_to(dem.outputs, na.shape_broadcasted(temperature, dem.outputs))
 
-    # Each interval of width step adds step / 3 times the DEM at either end
-    # to the temperature there, and step / 6 times the DEM at the other end.
-    # The result is accumulated in place, since a map of DEMs can be large.
-    zero = 0 * step[{axis_temperature: slice(0, 1)}]
-    width = na.concatenate([step, zero], axis=axis_temperature)
-    width = width + na.concatenate([zero, step], axis=axis_temperature)
-    result = d * (width / 3)
-    result[lower] += d[upper] * (step / 6)
-    result[upper] += d[lower] * (step / 6)
+    # M D, accumulated in place since a map of DEMs can be large: each
+    # temperature's own term, then the term of its neighbor above and of its
+    # neighbor below
+    lower = {axis_temperature: slice(None, -1)}
+    upper = {axis_temperature: slice(1, None)}
+    result = d * diagonal
+    result[lower] += d[upper] * off_diagonal
+    result[upper] += d[lower] * off_diagonal
     return cast(na.AbstractScalar, result)
+
+
+def _mass(
+    logt: na.AbstractScalar,
+    axis: str,
+) -> tuple[na.AbstractScalar, na.AbstractScalar]:
+    r"""
+    The diagonal and the off-diagonal of the mass matrix of the triangle
+    functions on a grid of :math:`\log_{10} T` along `axis`.
+
+    The matrix is tridiagonal and symmetric. This is the one definition of it
+    in the package: :func:`emission_measure` weights a DEM with it, and
+    :func:`utu.dem.plowman` fits the intensities with it. Its arithmetic is
+    that of the reference implementation of :func:`utu.dem.plowman`, in the
+    same order, since a rounding error in the matrix is carried through every
+    step of the inversion of every pixel.
+    """
+    step = logt[{axis: slice(1, None)}] - logt[{axis: slice(None, -1)}]
+
+    # the width of the interval above and below each temperature, zero
+    # beyond either end
+    zero = 0 * step[{axis: slice(0, 1)}]
+    above = na.concatenate([step, zero], axis=axis)
+    below = na.concatenate([zero, step], axis=axis)
+
+    diagonal = (above + below) * 2.0 / 6.0
+    off_diagonal = step / 6.0
+    return cast(na.AbstractScalar, diagonal), cast(na.AbstractScalar, off_diagonal)
