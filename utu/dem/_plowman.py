@@ -6,6 +6,8 @@ import astropy.units as u
 import named_arrays as na
 import numpy as np
 
+from ._emission_measure import _mass
+
 __all__ = [
     "plowman",
 ]
@@ -70,20 +72,22 @@ def _matrices(
 
     The DEM and the responses are both taken to be piecewise linear between
     the temperatures of the grid, so the mapping is the response times the
-    mass matrix of those triangle functions, and the regularization is their
+    mass matrix of those triangle functions, from :func:`_mass`, which
+    :func:`utu.dem.emission_measure` shares, and the regularization is their
     stiffness matrix. Both are tridiagonal, and both are written with the
     operations of the reference in the same order, since a rounding error in
-    a matrix is carried through every step of every pixel. That, and the
-    kernel taking plain arrays, is why this is :mod:`numpy` rather than
+    a matrix is carried through every step of every pixel. The kernel takes
+    plain arrays, so the rest of this is :mod:`numpy` rather than
     :mod:`named_arrays`.
     """
     num_temperature, num_channel = response.shape
     dt = logt[1:] - logt[:-1]
-    left = np.concatenate([dt, [0]])
-    right = np.concatenate([[0], dt])
 
-    mass = np.diag((left + right) * 2.0) / 6.0
-    mass += np.diag(dt, k=1) / 6.0 + np.diag(dt, k=-1) / 6.0
+    diagonal, off_diagonal = _mass(na.ScalarArray(logt, axes="t"), axis="t")
+    diagonal = diagonal.ndarray
+    off_diagonal = off_diagonal.ndarray
+    mass = np.diag(diagonal)
+    mass += np.diag(off_diagonal, k=1) + np.diag(off_diagonal, k=-1)
 
     inverse_left = np.concatenate([1.0 / dt, [0]])
     inverse_right = np.concatenate([[0], 1.0 / dt])
@@ -188,7 +192,10 @@ def plowman(
         :math:`\log_{10} T`, in units of ``intensity`` over the units of the
         outputs of ``response``: :math:`\mathrm{cm^{-5}}` for responses in
         :math:`\mathrm{DN\,cm^5\,s^{-1}}` and intensities in
-        :math:`\mathrm{DN\,s^{-1}}`.
+        :math:`\mathrm{DN\,s^{-1}}`. The fit takes it to be linear in
+        :math:`\log_{10} T` between the temperatures, and
+        :func:`utu.dem.emission_measure` weights it the same way, so that
+        the intensities it predicts from the DEM are the ones the fit found.
     chi2
         The reduced :math:`\chi^2` of each pixel. It is :math:`-1` where the
         iteration failed before its first step, in which case the DEM is not a
