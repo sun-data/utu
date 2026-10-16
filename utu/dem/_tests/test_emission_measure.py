@@ -106,6 +106,64 @@ def test_emission_measure_matrix() -> None:
     assert np.allclose(result, expected, rtol=1e-14)
 
 
+def test_emission_measure_grid_per_pixel() -> None:
+    """Each pixel may have its own temperatures, and is weighted by its own."""
+    grids = np.stack([_logt_uneven, _logt_uneven + 0.1])
+    rng = np.random.default_rng(2)
+    dem = rng.uniform(1e26, 1e28, grids.shape)
+
+    result = utu.dem.emission_measure(
+        na.FunctionArray(
+            inputs=na.ScalarArray(10**grids * u.K, axes=("x", "temperature")),
+            outputs=na.ScalarArray(dem / u.cm**5, axes=("x", "temperature")),
+        ),
+        axis_temperature="temperature",
+    )
+
+    expected = na.ScalarArray(
+        np.stack([d @ _mass(g) for g, d in zip(grids, dem)]) / u.cm**5,
+        axes=("x", "temperature"),
+    )
+    assert np.allclose(result, expected, rtol=1e-14)
+
+
+def test_emission_measure_uncertain_temperature() -> None:
+    """
+    Uncertain temperatures weight the DEM by the grid of the nominal
+    temperatures and of each sample.
+    """
+    axis = na.UncertainScalarArray.axis_distribution
+    grids = np.stack([_logt_uneven + 0.02, _logt_uneven - 0.03])
+    dem = np.linspace(1e27, 2e27, _logt_uneven.size)
+
+    result = utu.dem.emission_measure(
+        na.FunctionArray(
+            inputs=na.UncertainScalarArray(
+                nominal=_temperature(_logt_uneven),
+                distribution=na.ScalarArray(
+                    10**grids * u.K,
+                    axes=(axis, "temperature"),
+                ),
+            ),
+            outputs=na.ScalarArray(dem / u.cm**5, axes="temperature"),
+        ),
+        axis_temperature="temperature",
+    )
+
+    expected = na.UncertainScalarArray(
+        nominal=na.ScalarArray(
+            dem @ _mass(_logt_uneven) / u.cm**5,
+            axes="temperature",
+        ),
+        distribution=na.ScalarArray(
+            np.stack([dem @ _mass(g) for g in grids]) / u.cm**5,
+            axes=(axis, "temperature"),
+        ),
+    )
+    assert isinstance(result, na.UncertainScalarArray)
+    assert np.allclose(result, expected, rtol=1e-14)
+
+
 def test_emission_measure_uncertain() -> None:
     """The nominal DEM and each sample of its distribution are weighted alike."""
     axis = na.UncertainScalarArray.axis_distribution
@@ -166,9 +224,9 @@ def test_emission_measure_plowman() -> None:
         inputs=response.inputs,
         outputs=amplitude * np.exp(-np.square((logt - 6.2) / 0.15) / 2) / u.cm**5,
     )
-    intensity = (
-        response.outputs * utu.dem.emission_measure(dem_true, "temperature")
-    ).sum("temperature")
+    # the intensities of the functions themselves, as the docstring advises,
+    # which the sum times the step integrates for these smooth functions
+    intensity = (response.outputs * dem_true.outputs).sum("temperature") * 0.05
 
     # noise, so that the fit stops short of the data
     rng = np.random.default_rng(0)
@@ -205,6 +263,26 @@ def test_emission_measure_plowman() -> None:
         ),
         (_dem(_logt[:1], np.ones(1)), "at least two temperatures"),
         (_dem(_logt[::-1], np.ones(_logt.size)), "must be increasing"),
+        (
+            na.FunctionArray(
+                inputs=na.ScalarArray(
+                    np.array([0, 1e5, 1e6]) * u.K, axes="temperature"
+                ),
+                outputs=na.ScalarArray(np.ones(3) / u.cm**5, axes="temperature"),
+            ),
+            "must be positive",
+        ),
+        (
+            na.FunctionArray(
+                inputs=na.ScalarArray(
+                    np.array([-1, 1e5, 1e6]) * u.K, axes="temperature"
+                ),
+                outputs=na.ScalarArray(np.ones(3) / u.cm**5, axes="temperature"),
+            ),
+            "must be positive",
+        ),
+        (_dem(_logt, np.ones(1)), "have 1 temperatures, but its inputs have 31"),
+        (_dem(_logt, np.ones(5)), "have 5 temperatures, but its inputs have 31"),
     ],
 )
 def test_emission_measure_invalid(dem: na.FunctionArray, match: str) -> None:
