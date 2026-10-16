@@ -94,7 +94,10 @@ def synthesize(
         This is the emission measure of each bin, not the differential
         emission measure: a DEM per unit :math:`\log_{10} T`, such as
         :func:`utu.dem.plowman` returns, has the same units, and has to be
-        multiplied by the width of each bin in :math:`\log_{10} T` first.
+        converted first: multiplied by the width of each bin in
+        :math:`\log_{10} T`, or, to integrate it the way
+        :func:`utu.dem.plowman` fits the intensities, weighted with
+        :func:`utu.dem.emission_measure`.
     velocity
         The vertices of the bins of velocity, along `axis_velocity`. Positive
         velocities are away from the observer, to longer wavelengths.

@@ -188,7 +188,10 @@ def plowman(
         :math:`\log_{10} T`, in units of ``intensity`` over the units of the
         outputs of ``response``: :math:`\mathrm{cm^{-5}}` for responses in
         :math:`\mathrm{DN\,cm^5\,s^{-1}}` and intensities in
-        :math:`\mathrm{DN\,s^{-1}}`.
+        :math:`\mathrm{DN\,s^{-1}}`. The fit takes it to be linear in
+        :math:`\log_{10} T` between the temperatures, and
+        :func:`utu.dem.emission_measure` weights it the same way, so that
+        the intensities it predicts from the DEM are the ones the fit found.
     chi2
         The reduced :math:`\chi^2` of each pixel. It is :math:`-1` where the
         iteration failed before its first step, in which case the DEM is not a
