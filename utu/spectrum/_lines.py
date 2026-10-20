@@ -1,6 +1,7 @@
 """The emission lines of an optically thin plasma."""
 
 import functools
+import logging
 
 import astropy.units as u
 import fiasco
@@ -245,10 +246,14 @@ def contribution_function(
 
     coupled = tuple(axis_density) == (axis_temperature,)
 
-    result = ion.contribution_function(
-        na.as_named_array(density).ndarray,
-        couple_density_to_temperature=coupled,
-    )
+    fiasco.log.addFilter(_not_single_ion)
+    try:
+        result = ion.contribution_function(
+            na.as_named_array(density).ndarray,
+            couple_density_to_temperature=coupled,
+        )
+    finally:
+        fiasco.log.removeFilter(_not_single_ion)
 
     # the last axis of the result runs over the bound-bound transitions, so
     # that is the wavelength which belongs to it
@@ -264,6 +269,20 @@ def contribution_function(
         inputs=na.ScalarArray(wavelength, axes=(axis,)),
         outputs=result,
     )
+
+
+def _not_single_ion(record: logging.LogRecord) -> bool:
+    """
+    Whether a record of the log of :mod:`fiasco` is anything but its warning
+    that an ion is solved with the single-ion model.
+
+    :mod:`fiasco` asks for the two-ion model by default, and solves an ion
+    without the data that model needs with the single-ion model instead,
+    which is the right model for it. It warns each time, and that is most
+    ions, while the only way to tell which ions they are beforehand is
+    private to :mod:`fiasco`.
+    """
+    return "Using single-ion model" not in record.getMessage()
 
 
 def lines(
