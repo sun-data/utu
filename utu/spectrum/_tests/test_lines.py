@@ -145,6 +145,40 @@ def test_contribution_function_grid(proton_electron_ratio: u.Quantity):
 
 
 @needs_database
+def test_contribution_function_single_ion(
+    caplog: pytest.LogCaptureFixture,
+    proton_electron_ratio: u.Quantity,
+):
+    """
+    An ion without the data for the two-ion model, which fiasco solves with
+    the single-ion model and warns about, is solved the same way without
+    the warning.
+    """
+    ion = fiasco.Ion("O 5", temperature.ndarray)
+
+    fiasco.log.addHandler(caplog.handler)
+    try:
+        result = utu.spectrum.contribution_function(
+            ion=ion,
+            density=density,
+            axis_temperature="temperature",
+            proton_electron_ratio=proton_electron_ratio,
+        )
+        assert not any("single-ion" in r.getMessage() for r in caplog.records)
+
+        # fiasco itself warns about this ion, once the call above is done
+        expected = ion.contribution_function(
+            density.ndarray,
+            couple_density_to_temperature=True,
+        )
+        assert any("single-ion" in r.getMessage() for r in caplog.records)
+    finally:
+        fiasco.log.removeHandler(caplog.handler)
+
+    assert np.all(result.outputs.ndarray == expected[:, 0, :])
+
+
+@needs_database
 def test_lines():
     """The whole of it, with nothing given that can be worked out."""
     result = utu.spectrum.lines(
