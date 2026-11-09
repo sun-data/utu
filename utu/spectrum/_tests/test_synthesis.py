@@ -277,8 +277,29 @@ def test_synthesize_axes():
         dict(mass=na.ScalarArray([20, 28, 32] * u.u, axes="line")),
         # a mass for each of two lines, given to one line
         dict(contribution=contribution[{"line": 0}]),
+        # bins of line-of-sight velocity which the emission measure lacks
+        dict(axis_shift="vdop"),
+        # bins of line-of-sight velocity along the axis of temperature
+        dict(axis_shift="temperature"),
+        # bins of the spectrum which change with the bins of line-of-sight
+        # velocity summed over
+        dict(
+            emission_measure=emission_measure * na.ScalarArray(np.ones(3), axes="vdop"),
+            velocity=velocity * na.linspace(1, 2, axis="vdop", num=3),
+            axis_shift="vdop",
+        ),
     ],
-    ids=["velocity", "velocity-temperature", "temperature", "zero", "mass", "single"],
+    ids=[
+        "velocity",
+        "velocity-temperature",
+        "temperature",
+        "zero",
+        "mass",
+        "single",
+        "shift-missing",
+        "shift-temperature",
+        "velocity-shift",
+    ],
 )
 def test_synthesize_error(kwargs: dict):
     with pytest.raises(ValueError):
@@ -348,16 +369,69 @@ def test_synthesize_wings():
     assert np.allclose(fraction, expected, rtol=1e-6)
 
 
-def test_synthesize_blocks(monkeypatch: pytest.MonkeyPatch):
-    """A map synthesized a line at a time is the same map."""
+@pytest.mark.parametrize(
+    argnames="shift,size_block",
+    argvalues=[
+        # The kernel of one line in one bin of velocity has an element at
+        # each of the six temperatures, and room for one of them is a line
+        # and a bin at a time.
+        (0 * u.km / u.s, 6),
+        # A shift which varies from pixel to pixel gives the kernel the three
+        # pixels of the map as well.
+        (na.ScalarArray([-20, 0, 30] * u.km / u.s, axes="x"), 6 * 3),
+        # Both lines in seven bins at a time, which leaves fewer bins in the
+        # last block.
+        (na.ScalarArray([-20, 0, 30] * u.km / u.s, axes="x"), 6 * 3 * 2 * 7),
+    ],
+    ids=["line", "map", "bins"],
+)
+def test_synthesize_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+    shift: u.Quantity | na.AbstractScalar,
+    size_block: int,
+) -> None:
+    """A map synthesized in blocks of lines and of bins is the same map."""
     em = emission_measure * na.ScalarArray(np.array([1, 2, 3]), axes="x")
-    expected = _synthesize(emission_measure=em)
+    expected = _synthesize(emission_measure=em, shift=shift)
 
-    # room for one line at every temperature and in every pixel, and no more
-    monkeypatch.setattr(utu.spectrum._synthesis, "_size_block", 6 * 3)
-    result = _synthesize(emission_measure=em)
+    monkeypatch.setattr(utu.spectrum._synthesis, "_size_block", size_block)
+    result = _synthesize(emission_measure=em, shift=shift)
 
+    assert na.shape(result.outputs) == na.shape(expected.outputs)
     assert np.allclose(result.outputs, expected.outputs, rtol=1e-12)
+
+
+def test_synthesize_axis_shift() -> None:
+    """
+    An emission measure resolved in line-of-sight velocity is the plasma in
+    each of its bins of velocity, each at its own shift and width, added up.
+    """
+    shift = na.ScalarArray([-40, 0, 25] * u.km / u.s, axes="vdop")
+    width = na.ScalarArray([10, 5, 15] * u.km / u.s, axes="vdop")
+
+    em = emission_measure * na.ScalarArray(np.array([0.2, 0.5, 0.3]), axes="vdop")
+    em = em * na.ScalarArray(np.array([1, 2]), axes="x")
+
+    result = _synthesize(
+        emission_measure=em,
+        shift=shift,
+        width_nonthermal=width,
+        axis_shift="vdop",
+    )
+
+    assert na.shape(result.outputs) == dict(line=2, velocity=800, x=2)
+
+    expected = 0
+    for i in range(3):
+        index = {"vdop": i}
+        part = _synthesize(
+            emission_measure=em[index],
+            shift=shift[index],
+            width_nonthermal=width[index],
+        )
+        expected = expected + part.outputs
+
+    assert np.allclose(result.outputs, expected, rtol=1e-12)
 
 
 @needs_database
