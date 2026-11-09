@@ -1,3 +1,5 @@
+import math
+
 import astropy.constants
 import astropy.units as u
 import fiasco
@@ -277,8 +279,42 @@ def test_synthesize_axes():
         dict(mass=na.ScalarArray([20, 28, 32] * u.u, axes="line")),
         # a mass for each of two lines, given to one line
         dict(contribution=contribution[{"line": 0}]),
+        # bins of line-of-sight velocity which the emission measure lacks
+        dict(axis_shift="vdop"),
+        # bins of line-of-sight velocity along the axis of temperature, of
+        # the spectrum, or of lines
+        dict(axis_shift="temperature"),
+        dict(axis_shift="velocity"),
+        dict(axis_shift="line"),
+        # an emission measure in one bin of line-of-sight velocity, with a
+        # shift for each of three
+        dict(
+            emission_measure=emission_measure * na.ScalarArray(np.ones(1), axes="vdop"),
+            shift=na.ScalarArray([-40, 0, 25] * u.km / u.s, axes="vdop"),
+            axis_shift="vdop",
+        ),
+        # bins of the spectrum which change with the bins of line-of-sight
+        # velocity summed over
+        dict(
+            emission_measure=emission_measure * na.ScalarArray(np.ones(3), axes="vdop"),
+            velocity=velocity * na.linspace(1, 2, axis="vdop", num=3),
+            axis_shift="vdop",
+        ),
     ],
-    ids=["velocity", "velocity-temperature", "temperature", "zero", "mass", "single"],
+    ids=[
+        "velocity",
+        "velocity-temperature",
+        "temperature",
+        "zero",
+        "mass",
+        "single",
+        "shift-missing",
+        "shift-temperature",
+        "shift-velocity",
+        "shift-line",
+        "shift-one",
+        "velocity-shift",
+    ],
 )
 def test_synthesize_error(kwargs: dict):
     with pytest.raises(ValueError):
@@ -295,6 +331,15 @@ def test_synthesize_empty():
     )
 
     assert na.shape(result.outputs) == dict(line=0, velocity=800)
+
+
+def test_synthesize_empty_map() -> None:
+    """A map with no pixels, along which the profile varies, is no pixels."""
+    shift = na.ScalarArray(np.zeros(0) * u.km / u.s, axes="x")
+
+    result = _synthesize(shift=shift)
+
+    assert na.shape(result.outputs) == dict(line=2, x=0, velocity=800)
 
 
 def test_synthesize_broadcast():
@@ -348,15 +393,157 @@ def test_synthesize_wings():
     assert np.allclose(fraction, expected, rtol=1e-6)
 
 
-def test_synthesize_blocks(monkeypatch: pytest.MonkeyPatch):
-    """A map synthesized a line at a time is the same map."""
-    em = emission_measure * na.ScalarArray(np.array([1, 2, 3]), axes="x")
-    expected = _synthesize(emission_measure=em)
+def _count_blocks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """
+    Record how many blocks of bins and of lines :func:`utu.spectrum.synthesize`
+    splits the result into, by appending each number to the list returned.
+    """
+    nums = []
+    blocks = utu.spectrum._synthesis._blocks
 
-    # room for one line at every temperature and in every pixel, and no more
-    monkeypatch.setattr(utu.spectrum._synthesis, "_size_block", 6 * 3)
-    result = _synthesize(emission_measure=em)
+    def _blocks(num: int, num_block: int) -> list[slice]:
+        """:func:`utu.spectrum._synthesis._blocks`, recorded."""
+        result = blocks(num, num_block)
+        nums.append(len(result))
+        return result
 
+    monkeypatch.setattr(utu.spectrum._synthesis, "_blocks", _blocks)
+    return nums
+
+
+# An emission measure along the three pixels of a map, and the same with
+# uncertainty.
+_em_map = emission_measure * na.ScalarArray(np.array([1, 2, 3]), axes="x")
+_em_map_uncertain = na.UncertainScalarArray(
+    nominal=_em_map,
+    distribution=_em_map * na.ScalarArray(np.array([0.9, 1.2]), axes="_distribution"),
+)
+
+
+@pytest.mark.parametrize(
+    argnames="em,shift,size_block,num_block",
+    argvalues=[
+        # The kernel of one line in one bin of velocity has an element at
+        # each of the six temperatures, and the radiance it gives one at each
+        # of the three pixels, so room for nine is a line and a bin at a time.
+        (_em_map, 0 * u.km / u.s, 6 + 3, 2 * 800),
+        # A shift which varies from pixel to pixel gives the kernel the three
+        # pixels of the map as well.
+        (
+            _em_map,
+            na.ScalarArray([-20, 0, 30] * u.km / u.s, axes="x"),
+            6 * 3 + 3,
+            2 * 800,
+        ),
+        # Both lines in seven bins at a time, which leaves two bins in the
+        # last block.
+        (
+            _em_map,
+            na.ScalarArray([-20, 0, 30] * u.km / u.s, axes="x"),
+            (6 * 3 + 3) * 2 * 7,
+            115,
+        ),
+        # An uncertain emission measure is as uncertain in blocks.
+        (
+            _em_map_uncertain,
+            na.ScalarArray([-20, 0, 30] * u.km / u.s, axes="x"),
+            (6 * 3 + 3) * 2 * 7,
+            115,
+        ),
+    ],
+    ids=["line", "map", "bins", "uncertain"],
+)
+def test_synthesize_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+    em: na.AbstractScalar,
+    shift: u.Quantity | na.AbstractScalar,
+    size_block: int,
+    num_block: int,
+) -> None:
+    """
+    A map synthesized in blocks of lines and of bins is the same map, of the
+    same type and with its axes in the same order, as in one piece.
+    """
+    nums = _count_blocks(monkeypatch)
+    expected = _synthesize(emission_measure=em, shift=shift)
+    assert math.prod(nums) == 1
+
+    nums.clear()
+    monkeypatch.setattr(utu.spectrum._synthesis, "_size_block", size_block)
+    result = _synthesize(emission_measure=em, shift=shift)
+    assert math.prod(nums) == num_block
+
+    assert type(result.outputs) is type(expected.outputs)
+    assert result.outputs.axes == expected.outputs.axes
+    assert na.shape(result.outputs) == na.shape(expected.outputs)
+    # the nominal values and the distributions, if uncertain
+    assert np.allclose(result.outputs, expected.outputs, rtol=1e-12)
+
+
+@pytest.mark.parametrize(
+    argnames="size_block",
+    argvalues=[
+        None,
+        # Both lines in seven bins at a time: the kernel of one line in one
+        # bin has an element at each of six temperatures in each of three
+        # bins of line-of-sight velocity, and the radiance one at each of
+        # two pixels.
+        (6 * 3 + 2) * 2 * 7,
+    ],
+    ids=["whole", "blocks"],
+)
+def test_synthesize_axis_shift(
+    monkeypatch: pytest.MonkeyPatch,
+    size_block: None | int,
+) -> None:
+    """
+    An emission measure resolved in line-of-sight velocity is the plasma in
+    each of its bins of velocity, each at its own shift and width, added up.
+    """
+    shift = na.ScalarArray([-40, 0, 25] * u.km / u.s, axes="vdop")
+    width = na.ScalarArray([10, 5, 15] * u.km / u.s, axes="vdop")
+
+    em = emission_measure * na.ScalarArray(np.array([0.2, 0.5, 0.3]), axes="vdop")
+    em = em * na.ScalarArray(np.array([1, 2]), axes="x")
+
+    nums = _count_blocks(monkeypatch)
+    if size_block is not None:
+        monkeypatch.setattr(utu.spectrum._synthesis, "_size_block", size_block)
+    result = _synthesize(
+        emission_measure=em,
+        shift=shift,
+        width_nonthermal=width,
+        axis_shift="vdop",
+    )
+    assert math.prod(nums) == (1 if size_block is None else 115)
+
+    assert na.shape(result.outputs) == dict(line=2, velocity=800, x=2)
+
+    expected = 0
+    for i in range(3):
+        index = {"vdop": i}
+        part = _synthesize(
+            emission_measure=em[index],
+            shift=shift[index],
+            width_nonthermal=width[index],
+        )
+        expected = expected + part.outputs
+
+    assert np.allclose(result.outputs, expected, rtol=1e-12)
+
+
+def test_synthesize_axis_shift_constant() -> None:
+    """
+    Bins of line-of-sight velocity which all have the same shift and width
+    are the plasma in all of them at that shift and width.
+    """
+    em = emission_measure * na.ScalarArray(np.array([0.2, 0.5, 0.3]), axes="vdop")
+    shift = 15 * u.km / u.s
+
+    result = _synthesize(emission_measure=em, shift=shift, axis_shift="vdop")
+    expected = _synthesize(emission_measure=em.sum("vdop"), shift=shift)
+
+    assert na.shape(result.outputs) == dict(line=2, velocity=800)
     assert np.allclose(result.outputs, expected.outputs, rtol=1e-12)
 
 
