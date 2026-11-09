@@ -15,14 +15,16 @@ __all__ = [
 
 _size_block = 2**25
 """
-The most elements of the kernel :func:`synthesize` computes at once, a
-quarter of a gigabyte in double precision.
+The most elements :func:`synthesize` computes at once, a quarter of a
+gigabyte in double precision, where it computes the result in blocks.
 
 The kernel is the spectral radiance of each line in each bin of velocity per
-unit emission measure in each bin of temperature, and it is as large as the
-map only where the profile varies from pixel to pixel. It is computed for as
-many bins of velocity and lines at a time as fit in this, and at least one
-of each.
+unit emission measure in each bin of temperature. If it fits in this for
+every line and bin at once, the result is computed in one piece. Otherwise,
+as where the profile or the contribution function varies from pixel to pixel
+and the kernel is as large as the map, the kernel and the radiance it gives
+are computed for as many bins of velocity and lines at a time as fit in
+this, and at least one of each.
 """
 
 
@@ -131,8 +133,11 @@ def synthesize(
         binned by line-of-sight velocity, as in a velocity-resolved DEM,
         summed over like `axis_temperature`. `shift` is then the velocity of
         each bin, and `width_nonthermal` can hold the spread of velocities
-        within it, such as its width over :math:`\sqrt{12}`, the standard
-        deviation of a uniform distribution across it. If :obj:`None`, the
+        within it. The profile of each bin is a Gaussian, so plasma spread
+        evenly across a bin is approximated by a Gaussian of the same
+        variance, with a nonthermal width of the width of the bin over
+        :math:`\sqrt{12}`. `emission_measure` must have every element along
+        this axis that the other arguments have. If :obj:`None`, the
         default, only `axis_temperature` is summed over.
     axis_velocity
         The name of the axis of `velocity`.
@@ -156,9 +161,10 @@ def synthesize(
         If `velocity` has no axis `axis_velocity` or varies along
         `axis_temperature` or `axis_shift`, if `temperature` or the
         outputs of `contribution` have no axis `axis_temperature`, if
-        `emission_measure` has no axis `axis_shift`, if a temperature is
-        not positive, or if an argument varies along `axis` differently than
-        `contribution` does.
+        `axis_shift` is `axis_temperature`, `axis_velocity`, or `axis`, if
+        `emission_measure` has no axis `axis_shift` or fewer elements along
+        it than another argument, if a temperature is not positive, or if an
+        argument varies along `axis` differently than `contribution` does.
 
     Notes
     -----
@@ -172,13 +178,14 @@ def synthesize(
     The spectral radiance of each line per unit emission measure in each bin
     of temperature, the kernel, is computed first, and then summed with the
     emission measure over `axis_temperature` and `axis_shift` by
-    :func:`named_arrays.vecdot`. Unless the profile varies from pixel to
-    pixel, the kernel has no axes of the map, and the sum is a single matrix
-    product, so a map of many lines takes little more memory than the result
-    itself, and is many times faster than forming the product of the two.
-    Where the profile does vary from pixel to pixel, the kernel is as large
-    as the map, and is computed for as many bins of velocity and lines at a
-    time as fit in :data:`_size_block` elements. Where the profile is the
+    :func:`named_arrays.vecdot`. Unless the profile or the contribution
+    function varies from pixel to pixel, the kernel has no axes of the map,
+    and the sum is a single matrix product, so a map of many lines takes
+    little more memory than the result itself, and is many times faster than
+    forming the product of the two. Where one of them does vary from pixel
+    to pixel, the kernel is as large as the map, and it and the radiance it
+    gives are computed for as many bins of velocity and lines at a time as
+    fit in :data:`_size_block` elements. Where the profile is the
     same for every line, because none of `mass`, `shift`, and
     `width_nonthermal` varies along `axis`, it is computed once for all of
     them.
@@ -246,14 +253,16 @@ def synthesize(
 
     The same plasma, resolved in line-of-sight velocity as well: half of it
     at rest and a quarter in each of two bins :math:`40\,\mathrm{km\,s^{-1}}`
-    to either side, the plasma of each bin spread evenly across its width.
+    to either side. The plasma of each bin is spread evenly across its
+    width, which the profile approximates with a Gaussian of the same
+    variance.
 
     .. jupyter-execute::
 
         # the vertices of three bins of line-of-sight velocity
         vertices = na.linspace(-60, 60, axis="vdop", num=4) * u.km / u.s
-        center = (vertices[dict(vdop=slice(1, None))] + vertices[dict(vdop=slice(None, -1))]) / 2
-        width = np.diff(vertices, axis="vdop")
+        center = vertices.cell_centers("vdop")
+        width = vertices.volume_cell("vdop")
 
         fraction = na.ScalarArray(np.array([0.25, 0.5, 0.25]), axes="vdop")
 
@@ -296,9 +305,10 @@ def synthesize(
         )
     axis_sum = (axis_temperature,)
     if axis_shift is not None:
-        if axis_shift in (axis_temperature, axis):
+        if axis_shift in (axis_temperature, axis_velocity, axis):
             raise ValueError(
-                f"`axis_shift` must be an axis of its own, got {axis_shift!r}."
+                f"`axis_shift` must be an axis of its own, not `axis_temperature`, "
+                f"`axis_velocity`, or `axis`, got {axis_shift!r}."
             )
         if axis_shift not in na.shape(emission_measure):
             raise ValueError(
@@ -353,6 +363,19 @@ def synthesize(
         emission_measure,
         *profile.values(),
     )
+
+    # An emission measure with one element along `axis_shift` would be
+    # broadcast against the shifts and summed, counting its plasma once for
+    # each of them.
+    if axis_shift is not None:
+        num_shift = na.shape(emission_measure)[axis_shift]
+        if num_shift != shape[axis_shift]:
+            raise ValueError(
+                f"`emission_measure` must have as many elements along "
+                f"{axis_shift!r} as every other argument, {shape[axis_shift]}, "
+                f"got {num_shift}."
+            )
+
     for a in axis_sum:
         shape.pop(a)
     num_bin = shape[axis_velocity] - 1
@@ -366,35 +389,39 @@ def synthesize(
     emission_measure = emission_measure.value
 
     # The kernel varies along every axis the contribution function and the
-    # profile do, which are the axes of the map only if the profile varies
-    # from pixel to pixel. As many lines at a time as fit in a block in one
-    # bin of velocity, and as many bins at a time as fit with them.
-    shape_kernel = na.shape_broadcasted(g, wavelength_rest, temperature, *profile.values())
-    size = math.prod(n for a, n in shape_kernel.items() if a not in (axis, axis_velocity))
-    num_line_block = num_line if num_line else 1
-    if size * num_line_block > _size_block:
-        num_line_block = max(1, _size_block // size)
-    num_bin_block = max(1, _size_block // (size * num_line_block))
+    # profile do, which are axes of the map only where one of them varies
+    # from pixel to pixel. If the kernel of every line in every bin of
+    # velocity fits in a block, the result is computed in one piece.
+    # Otherwise, as many lines at a time as fit in a block in one bin of
+    # velocity, with the radiance they give, and as many bins at a time as
+    # fit with them.
+    shape_kernel = na.shape_broadcasted(
+        g, wavelength_rest, temperature, *profile.values()
+    )
+    size_kernel = math.prod(
+        n for a, n in shape_kernel.items() if a not in (axis, axis_velocity)
+    )
+    size_radiance = math.prod(
+        n for a, n in shape.items() if a not in (axis, axis_velocity)
+    )
+    num_line_all = 1 if num_line is None else num_line
+    if size_kernel * num_line_all * num_bin <= _size_block:
+        num_line_block = max(1, num_line_all)
+        num_bin_block = max(1, num_bin)
+    else:
+        size = size_kernel + size_radiance
+        num_line_block = max(1, min(num_line_all, _size_block // size))
+        num_bin_block = max(1, _size_block // (size * num_line_block))
 
-    blocks_bin = [
-        slice(k, min(k + num_bin_block, num_bin))
-        for k in range(0, num_bin, num_bin_block)
-    ]
+    blocks_bin = _blocks(num_bin, num_bin_block)
     if num_line is None:
         blocks_line = [None]
     else:
-        blocks_line = [
-            slice(i, i + num_line_block)
-            for i in range(0, num_line, num_line_block)
-        ]
+        blocks_line = _blocks(num_line, num_line_block)
 
     # One block is the result itself, and any other number of them fills it.
     single = len(blocks_bin) * len(blocks_line) == 1
-    if not single:
-        result = na.ScalarArray(
-            ndarray=np.zeros(tuple(shape.values())) << unit,
-            axes=tuple(shape),
-        )
+    result = None
 
     # The profile is the same for every line unless something it depends on
     # varies along the axis of lines, and is then computed once per block of
@@ -434,20 +461,31 @@ def synthesize(
             width = np.diff(_select(velocity[index_bin], index), axis=axis_velocity)
             width = wavelength_rest[index] * width / astropy.constants.c
 
-            kernel = g[index] * fraction / width / (4 * np.pi * u.sr)
-            kernel = kernel.to(unit_kernel).value
+            # The units are converted before the fraction, which has every
+            # axis of the kernel, is multiplied in.
+            factor = g[index] / width / (4 * np.pi * u.sr)
+            kernel = factor.to(unit_kernel).value * fraction
 
             radiance = na.vecdot(
                 kernel,
                 _select(emission_measure, index),
                 axis=axis_sum,
             )
-            radiance = radiance << unit
+            radiance = np.transpose(radiance << unit, axes=tuple(shape))
 
             if single:
                 result = radiance
             else:
+                if result is None:
+                    result = _allocate(radiance, shape)
                 result[index | {axis_velocity: bins}] = radiance
+
+    # no lines, or no bins of velocity
+    if result is None:
+        result = na.ScalarArray(
+            ndarray=np.zeros(tuple(shape.values())) << unit,
+            axes=tuple(shape),
+        )
 
     return na.FunctionArray(
         inputs=na.DopplerVectorArray.from_velocity(
@@ -498,6 +536,30 @@ def _fraction(
     erfc1 = scipy.special.erfc(side * z1)
 
     return side * (erfc0 - erfc1) / 2
+
+
+def _blocks(
+    num: int,
+    num_block: int,
+) -> list[slice]:
+    """
+    Split `num` elements into blocks of `num_block` elements, the last of
+    which may have fewer.
+    """
+    return [slice(k, min(k + num_block, num)) for k in range(0, num, num_block)]
+
+
+def _allocate(
+    block: na.AbstractScalar,
+    shape: dict[str, int],
+) -> na.AbstractScalar:
+    """
+    An array of the type and the unit of a block of the result of
+    :func:`synthesize`, scalar or uncertain, with the shape of the whole
+    result, every element of which the blocks overwrite.
+    """
+    first = {a: slice(0, 1) for a in na.shape(block)}
+    return na.broadcast_to(block[first], shape).copy()
 
 
 def _select(
