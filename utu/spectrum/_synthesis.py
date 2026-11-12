@@ -151,9 +151,10 @@ def synthesize(
     :
         The spectral radiance of each line in each bin of velocity, along
         `axis`, `axis_velocity`, and every axis of the other arguments but
-        `axis_temperature` and `axis_shift`. The inputs are the vertices of
-        the bins, as
-        wavelengths with the rest wavelength of each line beside them.
+        `axis_temperature` and `axis_shift`, in the precision of
+        `emission_measure`, or single precision if that is narrower. The
+        inputs are the vertices of the bins, as wavelengths with the rest
+        wavelength of each line beside them.
 
     Raises
     ------
@@ -189,6 +190,13 @@ def synthesize(
     same for every line, because none of `mass`, `shift`, and
     `width_nonthermal` varies along `axis`, it is computed once for all of
     them.
+
+    The kernel is computed in double precision, and rounded to the precision
+    of `emission_measure` before the sum. A matrix product of two precisions
+    would copy the emission measure into the wider one, so a map in single
+    precision, as the emission measure of a simulation often is, is summed in
+    single precision instead, and takes no more memory than itself, the
+    kernel, and the result.
 
     Examples
     --------
@@ -388,6 +396,13 @@ def synthesize(
     unit_kernel = unit / na.unit_normalized(emission_measure)
     emission_measure = emission_measure.value
 
+    # The kernel is computed in double precision, and rounded to the
+    # precision of the emission measure before the sum. A matrix product of
+    # two precisions copies the emission measure into the wider one, so a
+    # map of single precision, as a simulation often is, would otherwise be
+    # copied whole into double precision, twice its own size.
+    dtype = np.result_type(na.get_dtype(emission_measure), np.float32)
+
     # The kernel varies along every axis the contribution function and the
     # profile do, which are axes of the map only where one of them varies
     # from pixel to pixel. If the kernel of every line in every bin of
@@ -465,6 +480,7 @@ def synthesize(
             # axis of the kernel, is multiplied in.
             factor = g[index] / width / (4 * np.pi * u.sr)
             kernel = factor.to(unit_kernel).value * fraction
+            kernel = kernel.astype(dtype, copy=False)
 
             radiance = na.vecdot(
                 kernel,
@@ -483,7 +499,7 @@ def synthesize(
     # no lines, or no bins of velocity
     if result is None:
         result = na.ScalarArray(
-            ndarray=np.zeros(tuple(shape.values())) << unit,
+            ndarray=np.zeros(tuple(shape.values()), dtype=dtype) << unit,
             axes=tuple(shape),
         )
 

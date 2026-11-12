@@ -481,6 +481,70 @@ def test_synthesize_blocks(
 
 
 @pytest.mark.parametrize(
+    argnames="em",
+    argvalues=[_em_map, _em_map_uncertain],
+    ids=["scalar", "uncertain"],
+)
+@pytest.mark.parametrize(
+    argnames="size_block",
+    argvalues=[
+        None,
+        # Both lines in seven bins at a time, as above.
+        (6 * 3 + 3) * 2 * 7,
+    ],
+    ids=["whole", "blocks"],
+)
+def test_synthesize_precision(
+    monkeypatch: pytest.MonkeyPatch,
+    em: na.AbstractScalar,
+    size_block: None | int,
+) -> None:
+    """
+    An emission measure in single precision is summed in single precision.
+
+    Its kernel is rounded to single precision, so that the matrix product
+    does not copy the emission measure into double precision, which would
+    give a spectrum in double precision. The spectrum agrees with the one
+    summed in double precision to within the rounding of single precision.
+
+    The bins span no more than a few thermal widths of the hottest plasma,
+    so that every bin holds far more of each line than the least number
+    single precision can hold.
+    """
+    shift = na.ScalarArray([-20, 0, 30] * u.km / u.s, axes="x")
+    v = na.linspace(-100, 100, axis="velocity", num=41) * u.km / u.s
+
+    if size_block is not None:
+        monkeypatch.setattr(utu.spectrum._synthesis, "_size_block", size_block)
+
+    em_single = em.astype(np.float32)
+    em_double = em_single.astype(np.float64)
+
+    result = _synthesize(emission_measure=em_single, shift=shift, velocity=v)
+    expected = _synthesize(emission_measure=em_double, shift=shift, velocity=v)
+
+    assert type(result.outputs) is type(expected.outputs)
+    assert result.outputs.dtype == np.float32
+    assert expected.outputs.dtype == np.float64
+    assert na.shape(result.outputs) == dict(line=2, velocity=40, x=3)
+    assert np.allclose(result.outputs, expected.outputs, rtol=1e-6)
+
+
+def test_synthesize_precision_empty() -> None:
+    """No lines from an emission measure in single precision are single too."""
+    index = {"line": slice(0, 0)}
+
+    result = _synthesize(
+        contribution=contribution[index],
+        mass=mass[index],
+        emission_measure=emission_measure.astype(np.float32),
+    )
+
+    assert na.shape(result.outputs) == dict(line=0, velocity=800)
+    assert result.outputs.dtype == np.float32
+
+
+@pytest.mark.parametrize(
     argnames="size_block",
     argvalues=[
         None,
