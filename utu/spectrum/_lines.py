@@ -10,6 +10,7 @@ import numpy as np
 
 __all__ = [
     "contribution_function",
+    "contribution_function_line",
     "ions",
     "lines",
 ]
@@ -283,6 +284,212 @@ def _not_single_ion(record: logging.LogRecord) -> bool:
     private to :mod:`fiasco`.
     """
     return "Using single-ion model" not in record.getMessage()
+
+
+def contribution_function_line(
+    ion: str | na.AbstractScalar,
+    wavelength: u.Quantity | na.AbstractScalar,
+    temperature: na.AbstractScalar,
+    density: u.Quantity | na.AbstractScalar,
+    axis_temperature: str = "temperature",
+    proton_electron_ratio: None | u.Quantity | na.AbstractScalar = None,
+    tolerance: u.Quantity = 0.5 * u.mAA,
+    size_chunk: None | int = None,
+    **kwargs: object,
+) -> na.FunctionArray:
+    r"""
+    Compute the contribution function of an observed line, named by its ion
+    and its wavelength.
+
+    An observed line is every transition of its ion at its wavelength, of
+    which there can be more than one, so the contribution functions of all
+    the transitions within ``tolerance`` of the wavelength are summed. This
+    is the difference from :func:`contribution_function`, which returns
+    every transition of an ion and leaves picking one out to the caller.
+
+    The result is laid out as :func:`contribution_function` lays it out, so
+    that it can be handed to :func:`synthesize`: the wavelength of each line
+    as the inputs, and its contribution function along ``axis_temperature``
+    and the axes of the lines as the outputs. Its units are those of
+    :mod:`fiasco`, which leaves the ratio of the density of hydrogen to that
+    of electrons out, so the emission measure it goes with is
+    :math:`\int n_e n_H \, dh`.
+
+    Parameters
+    ----------
+    ion
+        The ion which emits each line, named as :mod:`fiasco` names it,
+        ``"O 5"`` for instance. Give it, and ``wavelength``, along axes of
+        their own to compute several lines at once. An ion with more than
+        one of the lines is built once, and solved once at each temperature.
+    wavelength
+        The wavelength of each line, as CHIANTI lists it.
+    temperature
+        The temperatures of the plasma, along ``axis_temperature`` and no
+        other axis.
+    density
+        The number density of electrons, which may share the axis of the
+        temperature or have one of its own, as in
+        :func:`contribution_function`.
+    axis_temperature
+        The name of the axis of ``temperature``.
+    proton_electron_ratio
+        The ratio of protons to electrons at each temperature.
+        If :obj:`None` (the default), it is computed here, once, which walks
+        the whole database. Pass it to compute lines over one grid of
+        temperatures more than once without paying for it again.
+    tolerance
+        How close to ``wavelength`` a transition must be to belong to the
+        line. CHIANTI lists its wavelengths to the milliangstrom, so the
+        default is half of one.
+    size_chunk
+        How many temperatures to solve at once.
+        If :obj:`None` (the default), all of them. The level populations of
+        an ion are solved at every temperature at once, in a matrix as wide
+        as the ion and the ion it recombines from have levels, which for an
+        ion with hundreds of levels on a fine grid of temperatures is tens
+        of gigabytes. Each temperature is solved on its own, so solving a
+        few at a time changes nothing in the result. It does cost time:
+        :mod:`fiasco` builds the ion it recombines from anew for every chunk,
+        and that ion computes its own ratio of protons to electrons, which
+        walks the whole database again.
+    kwargs
+        Additional arguments passed to :class:`fiasco.Ion` and to
+        :func:`fiasco.proton_electron_ratio`.
+
+    Examples
+    --------
+    The contribution functions of the line ESIS was built to observe and of
+    the brighter of the two lines of :math:`\mathrm{Mg\,X}` beside it.
+
+    .. jupyter-execute::
+
+        import astropy.units as u
+        import matplotlib.pyplot as plt
+        import named_arrays as na
+        import numpy as np
+        import utu
+
+        axis = "temperature"
+        temperature = na.geomspace(1e4, 1e7, axis=axis, num=61) * u.K
+
+        ion = na.ScalarArray(np.array(["O 5", "Mg 10"]), axes="line")
+        wavelength = na.ScalarArray([629.732, 624.941] * u.AA, axes="line")
+
+        result = utu.spectrum.contribution_function_line(
+            ion=ion,
+            wavelength=wavelength,
+            temperature=temperature,
+            density=1e15 * u.K / u.cm ** 3 / temperature,
+            axis_temperature=axis,
+        )
+
+        fig, ax = plt.subplots(constrained_layout=True)
+        na.plt.plot(
+            temperature,
+            result.outputs,
+            ax=ax,
+            axis=axis,
+            label=utu.spectrum.spectroscopic(ion),
+        )
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_ylim(1e-26, 1e-21)
+        ax.set_xlabel(f"temperature ({temperature.unit:latex_inline})")
+        ax.set_ylabel(f"$G(T)$ ({result.outputs.unit:latex_inline})")
+        ax.legend()
+    """
+    temperature = na.as_named_array(temperature)
+    if tuple(temperature.shape) != (axis_temperature,):
+        raise ValueError(
+            f"The temperature must be along {axis_temperature!r} and no other "
+            f"axis, got {temperature.shape}."
+        )
+    num_temperature = temperature.shape[axis_temperature]
+
+    if size_chunk is None:
+        size_chunk = num_temperature
+    if size_chunk < 1:
+        raise ValueError(f"size_chunk must be at least 1, got {size_chunk}.")
+
+    ion = na.as_named_array(ion)
+    wavelength = na.as_named_array(wavelength)
+    shape = na.shape_broadcasted(ion, wavelength)
+    if axis_temperature in shape:
+        raise ValueError(
+            f"The lines must not be along the axis of the temperature, "
+            f"{axis_temperature!r}."
+        )
+    ion = ion.broadcast_to(shape)
+    wavelength = wavelength.broadcast_to(shape)
+
+    density = na.as_named_array(density)
+
+    # The ratio of protons to electrons depends on the temperature and on
+    # nothing else, and computing it walks the entire database, so it is
+    # computed once and sliced along with the temperature.
+    if proton_electron_ratio is None:
+        proton_electron_ratio = fiasco.proton_electron_ratio(
+            temperature.ndarray,
+            **kwargs,
+        )
+    if not isinstance(proton_electron_ratio, na.AbstractArray):
+        proton_electron_ratio = na.ScalarArray(
+            ndarray=proton_electron_ratio,
+            axes=(axis_temperature,),
+        )
+
+    axis_transition = "_transition"
+    result = None
+
+    for name in np.unique(ion.ndarray):
+        # The lines of this ion, and the transitions which make up each of
+        # them. The transitions are found in the first chunk and kept, since
+        # their wavelengths do not depend on the temperature.
+        indices = [i for i in na.ndindex(shape) if ion[i].ndarray == name]
+        transitions = None
+
+        for start in range(0, num_temperature, size_chunk):
+            chunk = {axis_temperature: slice(start, start + size_chunk)}
+            t = temperature[chunk]
+
+            g = contribution_function(
+                ion=fiasco.Ion(str(name), t.ndarray, **kwargs),
+                density=density[chunk],
+                axis_temperature=axis_temperature,
+                axis=axis_transition,
+                proton_electron_ratio=proton_electron_ratio[chunk],
+            )
+
+            if transitions is None:
+                transitions = []
+                for index in indices:
+                    w = wavelength[index].ndarray
+                    near = np.abs(g.inputs.ndarray - w) < tolerance
+                    if not np.any(near):
+                        raise ValueError(
+                            f"CHIANTI lists no transition of {name} within "
+                            f"{tolerance} of {w}."
+                        )
+                    transitions.append(
+                        na.ScalarArray(np.flatnonzero(near), axes=axis_transition)
+                    )
+
+            if result is None:
+                shape_result = {
+                    a: n for a, n in g.outputs.shape.items() if a != axis_transition
+                }
+                shape_result[axis_temperature] = num_temperature
+                result = na.ScalarArray.zeros(shape_result | shape) << g.outputs.unit
+
+            for index, transition in zip(indices, transitions):
+                line = g.outputs[{axis_transition: transition}]
+                result[index | chunk] = line.sum(axis_transition)
+
+    return na.FunctionArray(
+        inputs=wavelength,
+        outputs=result,
+    )
 
 
 def lines(

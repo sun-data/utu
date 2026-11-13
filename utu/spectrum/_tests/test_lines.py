@@ -287,3 +287,188 @@ def test_lines_ions(
 
     # and there were other ions to be had in this window
     assert len(ions_window) > 1
+
+
+# Two lines of one ion and one of another. CHIANTI lists two transitions of
+# O V at 122.133 angstroms, so the second line is a blend of them.
+ion_line = na.ScalarArray(np.array(["O 5", "O 5", "Mg 10"]), axes="line")
+wavelength_line = na.ScalarArray([629.732, 122.133, 624.941] * u.AA, axes="line")
+
+
+@needs_database
+def test_contribution_function_line(proton_electron_ratio: u.Quantity) -> None:
+    """
+    Each line is the sum of the transitions of its ion within half a
+    milliangstrom of its wavelength.
+    """
+    result = utu.spectrum.contribution_function_line(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        temperature=temperature,
+        density=density,
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    assert isinstance(result, na.FunctionArray)
+    assert np.all(result.inputs == wavelength_line)
+
+    expected = []
+    num_transition = []
+    for i in range(ion_line.shape["line"]):
+        index = {"line": i}
+        g = utu.spectrum.contribution_function(
+            ion=fiasco.Ion(ion_line[index].ndarray.item(), temperature.ndarray),
+            density=density,
+            axis_temperature="temperature",
+            axis="transition",
+            proton_electron_ratio=proton_electron_ratio,
+        )
+        w = wavelength_line[index].ndarray
+        near = np.abs(g.inputs.ndarray - w) < 0.5 * u.mAA
+        outputs = g.outputs.ndarray_aligned(("temperature", "transition"))
+        expected.append(outputs[:, near].sum(axis=~0))
+        num_transition.append(np.count_nonzero(near))
+
+    # which makes the second line a test of the sum
+    assert num_transition == [1, 2, 1]
+
+    expected = na.ScalarArray(
+        ndarray=np.stack(expected, axis=~0),
+        axes=("temperature", "line"),
+    )
+    assert np.all(result.outputs == expected)
+
+
+@needs_database
+@pytest.mark.parametrize("size_chunk", [1, 4])
+def test_contribution_function_line_chunk(
+    proton_electron_ratio: u.Quantity,
+    size_chunk: int,
+) -> None:
+    """
+    Solving the temperatures a few at a time changes nothing but the memory,
+    including in a last chunk smaller than the others.
+    """
+    kwargs = dict(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        temperature=temperature,
+        density=density,
+    )
+
+    expected = utu.spectrum.contribution_function_line(
+        proton_electron_ratio=proton_electron_ratio,
+        **kwargs,
+    )
+
+    # the ratio may be given with its axis as well as without
+    result = utu.spectrum.contribution_function_line(
+        proton_electron_ratio=na.ScalarArray(
+            ndarray=proton_electron_ratio,
+            axes=("temperature",),
+        ),
+        size_chunk=size_chunk,
+        **kwargs,
+    )
+
+    assert np.all(result.inputs == expected.inputs)
+    assert np.all(result.outputs == expected.outputs)
+
+
+@needs_database
+def test_contribution_function_line_scalar(proton_electron_ratio: u.Quantity) -> None:
+    """
+    A single line, named by a plain string and a plain quantity, without
+    the ratio of protons to electrons, which is then computed the way the
+    fixture computes it.
+    """
+    result = utu.spectrum.contribution_function_line(
+        ion="O 5",
+        wavelength=629.732 * u.AA,
+        temperature=temperature,
+        density=density,
+    )
+
+    expected = utu.spectrum.contribution_function_line(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        temperature=temperature,
+        density=density,
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    assert result.outputs.shape == temperature.shape
+    assert np.all(result.outputs == expected.outputs[{"line": 0}])
+
+
+@needs_database
+def test_contribution_function_line_grid(proton_electron_ratio: u.Quantity) -> None:
+    """A density on its own axis is every density at every temperature."""
+    density_grid = na.ScalarArray(
+        ndarray=np.array([1e9, 1e10]) / u.cm**3,
+        axes=("density",),
+    )
+
+    result = utu.spectrum.contribution_function_line(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        temperature=temperature,
+        density=density_grid,
+        proton_electron_ratio=proton_electron_ratio,
+        size_chunk=4,
+    )
+
+    expected = utu.spectrum.contribution_function(
+        ion=fiasco.Ion("O 5", temperature.ndarray),
+        density=density_grid,
+        axis_temperature="temperature",
+        axis="transition",
+        proton_electron_ratio=proton_electron_ratio,
+    )
+    near = np.abs(expected.inputs - wavelength_line[{"line": 0}]) < 0.5 * u.mAA
+    index = {"transition": int(np.flatnonzero(near.ndarray).item())}
+
+    num_temperature = temperature.shape["temperature"]
+    assert result.outputs.shape == dict(temperature=num_temperature, _density=2, line=3)
+    assert np.all(result.outputs[{"line": 0}] == expected.outputs[index])
+
+
+@needs_database
+def test_contribution_function_line_missing(
+    proton_electron_ratio: u.Quantity,
+) -> None:
+    """A wavelength at which the ion has no transition is an error."""
+    with pytest.raises(ValueError, match="no transition of O 5"):
+        utu.spectrum.contribution_function_line(
+            ion="O 5",
+            wavelength=630 * u.AA,
+            temperature=temperature,
+            density=density,
+            proton_electron_ratio=proton_electron_ratio,
+        )
+
+
+@pytest.mark.parametrize(
+    argnames="kwargs, match",
+    argvalues=[
+        (
+            dict(temperature=temperature * na.ScalarArray(np.ones(2), axes="x")),
+            "no other axis",
+        ),
+        (dict(size_chunk=0), "at least 1"),
+        (
+            dict(wavelength=wavelength_line * (temperature / temperature)),
+            "axis of the temperature",
+        ),
+    ],
+)
+def test_contribution_function_line_invalid(kwargs: dict, match: str) -> None:
+    """Arguments which cannot describe lines are refused before any is solved."""
+    arguments = dict(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        temperature=temperature,
+        density=density,
+    )
+    with pytest.raises(ValueError, match=match):
+        utu.spectrum.contribution_function_line(**(arguments | kwargs))

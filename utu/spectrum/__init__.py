@@ -2,6 +2,7 @@
 
 from ._lines import (
     contribution_function,
+    contribution_function_line,
     ions,
     lines,
 )
@@ -11,6 +12,7 @@ from ._synthesis import synthesize
 
 __all__ = [
     "contribution_function",
+    "contribution_function_line",
     "ions",
     "lines",
     "spectroscopic",
