@@ -103,13 +103,16 @@ def test_ions_database(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path):
 
 @needs_database
 def test_contribution_function(proton_electron_ratio: u.Quantity):
-    ion = fiasco.Ion("O 5", temperature.ndarray)
+    ion = fiasco.Ion(
+        "O 5",
+        temperature.ndarray,
+        proton_electron_ratio=proton_electron_ratio,
+    )
 
     result = utu.spectrum.contribution_function(
         ion=ion,
         density=density,
         axis_temperature="temperature",
-        proton_electron_ratio=proton_electron_ratio,
     )
 
     assert isinstance(result, na.FunctionArray)
@@ -123,9 +126,32 @@ def test_contribution_function(proton_electron_ratio: u.Quantity):
 
 
 @needs_database
+def test_contribution_function_ratio(proton_electron_ratio: u.Quantity) -> None:
+    """
+    A ratio of protons to electrons given here replaces the one the ion was
+    built with, in the ion and in the ion it recombines from.
+    """
+    ion = fiasco.Ion("Mg 10", temperature.ndarray, proton_electron_ratio=1)
+
+    utu.spectrum.contribution_function(
+        ion=ion,
+        density=density,
+        axis_temperature="temperature",
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    assert np.all(ion.proton_electron_ratio == proton_electron_ratio)
+    assert np.all(ion.next_ion().proton_electron_ratio == proton_electron_ratio)
+
+
+@needs_database
 def test_contribution_function_grid(proton_electron_ratio: u.Quantity):
     """A density on its own axis is every density at every temperature."""
-    ion = fiasco.Ion("O 5", temperature.ndarray)
+    ion = fiasco.Ion(
+        "O 5",
+        temperature.ndarray,
+        proton_electron_ratio=proton_electron_ratio,
+    )
 
     density_grid = na.ScalarArray(
         ndarray=np.array([1e9, 1e10]) / u.cm**3,
@@ -136,7 +162,6 @@ def test_contribution_function_grid(proton_electron_ratio: u.Quantity):
         ion=ion,
         density=density_grid,
         axis_temperature="temperature",
-        proton_electron_ratio=proton_electron_ratio,
     )
 
     shape = na.shape(result.outputs)
@@ -154,7 +179,11 @@ def test_contribution_function_single_ion(
     the single-ion model and warns about, is solved the same way without
     the warning.
     """
-    ion = fiasco.Ion("O 5", temperature.ndarray)
+    ion = fiasco.Ion(
+        "O 5",
+        temperature.ndarray,
+        proton_electron_ratio=proton_electron_ratio,
+    )
 
     fiasco.log.addHandler(caplog.handler)
     try:
@@ -162,7 +191,6 @@ def test_contribution_function_single_ion(
             ion=ion,
             density=density,
             axis_temperature="temperature",
-            proton_electron_ratio=proton_electron_ratio,
         )
         assert not any("single-ion" in r.getMessage() for r in caplog.records)
 
@@ -298,8 +326,8 @@ wavelength_line = na.ScalarArray([629.732, 122.133, 624.941] * u.AA, axes="line"
 @needs_database
 def test_contribution_function_line(proton_electron_ratio: u.Quantity) -> None:
     """
-    Each line is the sum of the transitions of its ion within half a
-    milliangstrom of its wavelength.
+    Each line is the sum of the transitions CHIANTI lists for its ion at its
+    wavelength.
     """
     result = utu.spectrum.contribution_function_line(
         ion=ion_line,
@@ -317,14 +345,17 @@ def test_contribution_function_line(proton_electron_ratio: u.Quantity) -> None:
     for i in range(ion_line.shape["line"]):
         index = {"line": i}
         g = utu.spectrum.contribution_function(
-            ion=fiasco.Ion(ion_line[index].ndarray.item(), temperature.ndarray),
+            ion=fiasco.Ion(
+                ion_line[index].ndarray.item(),
+                temperature.ndarray,
+                proton_electron_ratio=proton_electron_ratio,
+            ),
             density=density,
             axis_temperature="temperature",
             axis="transition",
-            proton_electron_ratio=proton_electron_ratio,
         )
         w = wavelength_line[index].ndarray
-        near = np.abs(g.inputs.ndarray - w) < 0.5 * u.mAA
+        near = g.inputs.ndarray == w
         outputs = g.outputs.ndarray_aligned(("temperature", "transition"))
         expected.append(outputs[:, near].sum(axis=~0))
         num_transition.append(np.count_nonzero(near))
@@ -402,8 +433,117 @@ def test_contribution_function_line_scalar(proton_electron_ratio: u.Quantity) ->
 
 
 @needs_database
+def test_contribution_function_line_ions(proton_electron_ratio: u.Quantity) -> None:
+    """
+    The lines of one ion need not be next to each other, nor be named the
+    same way, and one ion may be given for several wavelengths. Whichever
+    way, each ion is solved once.
+    """
+    kwargs = dict(
+        temperature=temperature,
+        density=density,
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    expected = utu.spectrum.contribution_function_line(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        **kwargs,
+    )
+
+    # the lines of O V on either side of the line of Mg X, one by another name
+    order = na.ScalarArray(np.array([0, 2, 1]), axes="line")
+
+    solved = []
+    contribution_function = utu.spectrum._lines.contribution_function
+
+    def counting(ion: fiasco.Ion, **kw: object) -> na.FunctionArray:
+        """Record the ion solved, then solve it."""
+        solved.append(ion.ion_name)
+        return contribution_function(ion=ion, **kw)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(utu.spectrum._lines, "contribution_function", counting)
+
+        result = utu.spectrum.contribution_function_line(
+            ion=na.ScalarArray(np.array(["O 5", "Mg 10", "O V"]), axes="line"),
+            wavelength=wavelength_line[{"line": order}],
+            **kwargs,
+        )
+        assert sorted(solved) == ["Mg 10", "O 5"]
+
+        # one ion, given once for both of its lines
+        solved.clear()
+        result_one = utu.spectrum.contribution_function_line(
+            ion="O 5",
+            wavelength=wavelength_line[{"line": slice(2)}],
+            **kwargs,
+        )
+        assert solved == ["O 5"]
+
+    assert np.all(result.inputs == expected.inputs[{"line": order}])
+    assert np.all(result.outputs == expected.outputs[{"line": order}])
+
+    assert np.all(result_one.inputs == expected.inputs[{"line": slice(2)}])
+    assert np.all(result_one.outputs == expected.outputs[{"line": slice(2)}])
+
+    # the inputs are a copy of their own, which can be written
+    assert result_one.inputs.ndarray.flags.writeable
+
+
+@needs_database
+def test_contribution_function_line_density_scalar(
+    proton_electron_ratio: u.Quantity,
+) -> None:
+    """
+    A scalar density is the same density at every temperature, and adds no
+    axis to the result.
+    """
+    kwargs = dict(
+        ion=ion_line,
+        wavelength=wavelength_line,
+        temperature=temperature,
+        proton_electron_ratio=proton_electron_ratio,
+    )
+
+    density_scalar = 1e10 / u.cm**3
+
+    result = utu.spectrum.contribution_function_line(
+        density=density_scalar,
+        **kwargs,
+    )
+
+    expected = utu.spectrum.contribution_function_line(
+        density=density_scalar * na.ScalarArray.ones(temperature.shape),
+        **kwargs,
+    )
+
+    assert result.outputs.shape == expected.outputs.shape
+    assert np.all(result.outputs == expected.outputs)
+
+
+def test_contribution_function_line_empty() -> None:
+    """No lines at all is an empty result, and needs no database."""
+    num_temperature = temperature.shape["temperature"]
+
+    result = utu.spectrum.contribution_function_line(
+        ion=na.ScalarArray(np.array([], dtype=str), axes="line"),
+        wavelength=na.ScalarArray([] * u.AA, axes="line"),
+        temperature=temperature,
+        density=density,
+        proton_electron_ratio=np.ones(num_temperature),
+    )
+
+    assert result.outputs.shape == dict(temperature=num_temperature, line=0)
+    assert result.outputs.unit.is_equivalent(u.erg * u.cm**3 / u.s)
+
+
+@needs_database
 def test_contribution_function_line_grid(proton_electron_ratio: u.Quantity) -> None:
-    """A density on its own axis is every density at every temperature."""
+    """
+    A density on its own axis is every density at every temperature, and
+    keeps the name of its axis.
+    """
     density_grid = na.ScalarArray(
         ndarray=np.array([1e9, 1e10]) / u.cm**3,
         axes=("density",),
@@ -419,18 +559,27 @@ def test_contribution_function_line_grid(proton_electron_ratio: u.Quantity) -> N
     )
 
     expected = utu.spectrum.contribution_function(
-        ion=fiasco.Ion("O 5", temperature.ndarray),
+        ion=fiasco.Ion(
+            "O 5",
+            temperature.ndarray,
+            proton_electron_ratio=proton_electron_ratio,
+        ),
         density=density_grid,
         axis_temperature="temperature",
         axis="transition",
-        proton_electron_ratio=proton_electron_ratio,
     )
-    near = np.abs(expected.inputs - wavelength_line[{"line": 0}]) < 0.5 * u.mAA
+    near = expected.inputs == wavelength_line[{"line": 0}]
     index = {"transition": int(np.flatnonzero(near.ndarray).item())}
+    expected = expected.outputs[index]
 
     num_temperature = temperature.shape["temperature"]
-    assert result.outputs.shape == dict(temperature=num_temperature, _density=2, line=3)
-    assert np.all(result.outputs[{"line": 0}] == expected.outputs[index])
+    assert result.outputs.shape == dict(temperature=num_temperature, density=2, line=3)
+
+    axes = ("temperature", "density")
+    assert np.all(
+        result.outputs[{"line": 0}].ndarray_aligned(axes)
+        == expected.ndarray_aligned(("temperature", "_density"))
+    )
 
 
 @needs_database
@@ -455,10 +604,19 @@ def test_contribution_function_line_missing(
             dict(temperature=temperature * na.ScalarArray(np.ones(2), axes="x")),
             "no other axis",
         ),
+        (dict(temperature=temperature[{"temperature": slice(0)}]), "is empty"),
         (dict(size_chunk=0), "at least 1"),
         (
             dict(wavelength=wavelength_line * (temperature / temperature)),
             "axis of the temperature",
+        ),
+        (
+            dict(density=na.ScalarArray(np.ones(3) / u.cm**3, axes="line")),
+            "the lines are not along",
+        ),
+        (
+            dict(density=density * na.ScalarArray(np.ones(2), axes="x")),
+            "the lines are not along",
         ),
     ],
 )

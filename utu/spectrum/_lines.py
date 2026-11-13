@@ -123,6 +123,11 @@ def _catalog(
     # the ions of the database they are read from, not of the default one
     database = kwargs.get("hdf5_dbase_root")
 
+    # Only the abundance and the transitions of each ion are read, not its
+    # ratio of protons to electrons, which an ion built without one computes
+    # by walking the whole database. So each ion is given one.
+    kwargs = {"proton_electron_ratio": 1} | kwargs
+
     for name in fiasco.list_ions(hdf5_dbase_root=database):
         try:
             ion = fiasco.Ion(name, 1 * u.MK, **kwargs)
@@ -193,13 +198,14 @@ def contribution_function(
         The name to give the axis along the lines of the result.
     proton_electron_ratio
         The ratio of protons to electrons at each temperature of ``ion``.
-        If :obj:`None` (the default), :mod:`fiasco` computes it, which walks
-        the whole database and takes an order of magnitude longer than the
-        rest of this function put together. It depends on the temperature
-        and on nothing else, so a caller with more than one ion should
-        compute it once with :func:`fiasco.proton_electron_ratio` and pass
-        it here. Doing so primes the cache of ``ion`` with the value it
-        would otherwise have computed for itself.
+        If :obj:`None` (the default), the ratio ``ion`` was built with.
+        Given here, it replaces that ratio, in ``ion`` and in the ion it
+        recombines from. :class:`fiasco.Ion` computes the ratio as an ion is
+        built, unless it is given one, which walks the whole database. The
+        ratio depends on the temperature and on nothing else, so a caller
+        with more than one ion should compute it once with
+        :func:`fiasco.proton_electron_ratio` and pass it to
+        :class:`fiasco.Ion` as each ion is built.
 
     Examples
     --------
@@ -241,7 +247,7 @@ def contribution_function(
         ax.set_ylabel(f"$G(T)$ ({result.outputs.unit:latex_inline})")
     """
     if proton_electron_ratio is not None:
-        ion.__dict__["proton_electron_ratio"] = _quantity(proton_electron_ratio)
+        ion.proton_electron_ratio = _quantity(proton_electron_ratio)
 
     axis_density = tuple(na.shape(density))
 
@@ -293,7 +299,7 @@ def contribution_function_line(
     density: u.Quantity | na.AbstractScalar,
     axis_temperature: str = "temperature",
     proton_electron_ratio: None | u.Quantity | na.AbstractScalar = None,
-    tolerance: u.Quantity = 0.5 * u.mAA,
+    tolerance: u.Quantity = 0.01 * u.mAA,
     size_chunk: None | int = None,
     **kwargs: object,
 ) -> na.FunctionArray:
@@ -310,38 +316,50 @@ def contribution_function_line(
     The result is laid out as :func:`contribution_function` lays it out, so
     that it can be handed to :func:`synthesize`: the wavelength of each line
     as the inputs, and its contribution function along ``axis_temperature``
-    and the axes of the lines as the outputs. Its units are those of
-    :mod:`fiasco`, which leaves the ratio of the density of hydrogen to that
-    of electrons out, so the emission measure it goes with is
-    :math:`\int n_e n_H \, dh`.
+    and the axes of the lines as the outputs. A density along an axis of its
+    own keeps the name of that axis, which :func:`contribution_function`
+    calls ``_density``. Its units are those of :mod:`fiasco`, which leaves
+    the ratio of the density of hydrogen to that of electrons out, so the
+    emission measure it goes with is :math:`\int n_e n_H \, dh`.
 
     Parameters
     ----------
     ion
         The ion which emits each line, named as :mod:`fiasco` names it,
-        ``"O 5"`` for instance. Give it, and ``wavelength``, along axes of
-        their own to compute several lines at once. An ion with more than
-        one of the lines is built once, and solved once at each temperature.
+        ``"O 5"`` for instance. It broadcasts against ``wavelength``, so
+        several lines are an ion and a wavelength for each along the same
+        axis, or one ion and several wavelengths. An ion with more than one
+        of the lines is built once and solved once at each temperature, even
+        if it is named two ways, ``"O 5"`` and ``"O V"`` for instance.
     wavelength
         The wavelength of each line, as CHIANTI lists it.
     temperature
         The temperatures of the plasma, along ``axis_temperature`` and no
         other axis.
     density
-        The number density of electrons, which may share the axis of the
-        temperature or have one of its own, as in
-        :func:`contribution_function`.
+        The number density of electrons. A scalar is the same density at
+        every temperature. A density along ``axis_temperature`` is one
+        density per temperature, an isobaric atmosphere for instance. A
+        density along one axis of its own is every density at every
+        temperature, and costs as many times more. It may not share an axis
+        with the lines.
     axis_temperature
         The name of the axis of ``temperature``.
     proton_electron_ratio
         The ratio of protons to electrons at each temperature.
         If :obj:`None` (the default), it is computed here, once, which walks
-        the whole database. Pass it to compute lines over one grid of
-        temperatures more than once without paying for it again.
+        the whole database. It is given to each ion as the ion is built,
+        and passed on by the ion to the ion it recombines from. Pass it to
+        compute lines over one grid of temperatures more than once without
+        paying for it again.
     tolerance
         How close to ``wavelength`` a transition must be to belong to the
-        line. CHIANTI lists its wavelengths to the milliangstrom, so the
-        default is half of one.
+        line. Two transitions of an ion which CHIANTI lists at different
+        wavelengths are at least a tenth of a milliangstrom apart, and many
+        are only half a milliangstrom apart, so the default is a tenth of
+        that least spacing. It gathers
+        every transition listed at the wavelength and none beside it, as
+        long as the wavelength is given as CHIANTI lists it.
     size_chunk
         How many temperatures to solve at once.
         If :obj:`None` (the default), all of them. The level populations of
@@ -349,18 +367,18 @@ def contribution_function_line(
         as the ion and the ion it recombines from have levels, which for an
         ion with hundreds of levels on a fine grid of temperatures is tens
         of gigabytes. Each temperature is solved on its own, so solving a
-        few at a time changes nothing in the result. It does cost time:
-        :mod:`fiasco` builds the ion it recombines from anew for every chunk,
-        and that ion computes its own ratio of protons to electrons, which
-        walks the whole database again.
+        few at a time changes nothing in the result.
     kwargs
-        Additional arguments passed to :class:`fiasco.Ion` and to
-        :func:`fiasco.proton_electron_ratio`.
+        Additional arguments passed to :class:`fiasco.Ion` for every ion,
+        and to :func:`fiasco.proton_electron_ratio`. They are passed
+        unchanged to every chunk of ``size_chunk`` temperatures, so none of
+        them may vary with the temperature, as an ``ionization_fraction``
+        given as an array would.
 
     Examples
     --------
     The contribution functions of the line ESIS was built to observe and of
-    the brighter of the two lines of :math:`\mathrm{Mg\,X}` beside it.
+    the line of :math:`\mathrm{Mg\,X}` nearest it.
 
     .. jupyter-execute::
 
@@ -406,6 +424,8 @@ def contribution_function_line(
             f"axis, got {temperature.shape}."
         )
     num_temperature = temperature.shape[axis_temperature]
+    if num_temperature == 0:
+        raise ValueError("The temperature is empty.")
 
     if size_chunk is None:
         size_chunk = num_temperature
@@ -421,9 +441,63 @@ def contribution_function_line(
             f"{axis_temperature!r}."
         )
     ion = ion.broadcast_to(shape)
-    wavelength = wavelength.broadcast_to(shape)
 
+    # a copy, so that the inputs of the result are its own and can be written
+    wavelength = wavelength.broadcast_to(shape).copy()
+
+    # A scalar density is the same density at every temperature, and is
+    # computed as such, so that it adds no axis to the result.
     density = na.as_named_array(density)
+    axes_density = tuple(density.shape)
+    if not axes_density:
+        density = density.broadcast_to(temperature.shape)
+        axes_density = (axis_temperature,)
+    if len(axes_density) > 1 or set(axes_density) & set(shape):
+        raise ValueError(
+            f"The density must be a scalar, along {axis_temperature!r}, or "
+            f"along one axis of its own which the lines are not along, got "
+            f"{density.shape}."
+        )
+    coupled = axes_density == (axis_temperature,)
+
+    shape_result = {axis_temperature: num_temperature}
+    if not coupled:
+        shape_result |= density.shape
+    shape_result |= shape
+
+    result = na.ScalarArray.zeros(shape_result) << (u.erg * u.cm**3 / u.s)
+
+    # Every line is matched to its transitions before any ion is solved, so
+    # that a wavelength with no transition fails at once rather than after
+    # the ions before it. The lines are grouped by the ion rather than by its
+    # name, so that an ion named two ways is still solved once. The
+    # wavelengths do not depend on the ratio of protons to electrons, which
+    # is given only so that fiasco does not compute it.
+    axis_transition = "_transition"
+    wavelength_ion: dict[tuple[int, int], u.Quantity] = {}
+    selections: dict[tuple[int, int], list[tuple[dict, na.ScalarArray]]] = {}
+    for index in na.ndindex(shape):
+        name = str(ion[index].ndarray)
+        key = fiasco.util.parse_ion_name(name)
+
+        if key not in selections:
+            transitions = fiasco.Ion(
+                key,
+                temperature.ndarray,
+                proton_electron_ratio=1,
+                **kwargs,
+            ).transitions
+            wavelength_ion[key] = transitions.wavelength[transitions.is_bound_bound]
+            selections[key] = []
+
+        w = wavelength[index].ndarray
+        near = np.abs(wavelength_ion[key] - w) < tolerance
+        if not np.any(near):
+            raise ValueError(
+                f"CHIANTI lists no transition of {name} within {tolerance} of {w}."
+            )
+        transition = na.ScalarArray(np.flatnonzero(near), axes=axis_transition)
+        selections[key].append((index, transition))
 
     # The ratio of protons to electrons depends on the temperature and on
     # nothing else, and computing it walks the entire database, so it is
@@ -439,51 +513,30 @@ def contribution_function_line(
             axes=(axis_temperature,),
         )
 
-    axis_transition = "_transition"
-    result = None
-
-    for name in np.unique(ion.ndarray):
-        # The lines of this ion, and the transitions which make up each of
-        # them. The transitions are found in the first chunk and kept, since
-        # their wavelengths do not depend on the temperature.
-        indices = [i for i in na.ndindex(shape) if ion[i].ndarray == name]
-        transitions = None
-
+    for key, selection in selections.items():
         for start in range(0, num_temperature, size_chunk):
             chunk = {axis_temperature: slice(start, start + size_chunk)}
-            t = temperature[chunk]
 
             g = contribution_function(
-                ion=fiasco.Ion(str(name), t.ndarray, **kwargs),
+                ion=fiasco.Ion(
+                    key,
+                    temperature[chunk].ndarray,
+                    proton_electron_ratio=proton_electron_ratio[chunk].ndarray,
+                    **kwargs,
+                ),
                 density=density[chunk],
                 axis_temperature=axis_temperature,
                 axis=axis_transition,
-                proton_electron_ratio=proton_electron_ratio[chunk],
             )
 
-            if transitions is None:
-                transitions = []
-                for index in indices:
-                    w = wavelength[index].ndarray
-                    near = np.abs(g.inputs.ndarray - w) < tolerance
-                    if not np.any(near):
-                        raise ValueError(
-                            f"CHIANTI lists no transition of {name} within "
-                            f"{tolerance} of {w}."
-                        )
-                    transitions.append(
-                        na.ScalarArray(np.flatnonzero(near), axes=axis_transition)
-                    )
+            # the axis of a density of its own, by the name it was given
+            outputs = g.outputs
+            if not coupled:
+                axes = [axes_density[0] if a == "_density" else a for a in outputs.axes]
+                outputs = outputs.replace(axes=tuple(axes))
 
-            if result is None:
-                shape_result = {
-                    a: n for a, n in g.outputs.shape.items() if a != axis_transition
-                }
-                shape_result[axis_temperature] = num_temperature
-                result = na.ScalarArray.zeros(shape_result | shape) << g.outputs.unit
-
-            for index, transition in zip(indices, transitions):
-                line = g.outputs[{axis_transition: transition}]
+            for index, transition in selection:
+                line = outputs[{axis_transition: transition}]
                 result[index | chunk] = line.sum(axis_transition)
 
     return na.FunctionArray(
@@ -551,8 +604,8 @@ def lines(
     proton_electron_ratio
         The ratio of protons to electrons at each temperature.
         If :obj:`None` (the default), it is computed here, once, and given
-        to every ion. Pass it to compute more than one spectrum over one
-        grid of temperatures without paying for it again.
+        to every ion as the ion is built. Pass it to compute more than one
+        spectrum over one grid of temperatures without paying for it again.
     axis_temperature
         The name of the axis of ``temperature``.
     axis
@@ -588,10 +641,15 @@ def lines(
 
     # The ratio of protons to electrons depends on the temperature and on
     # nothing else, and computing it walks the entire database. Computed
-    # once here and handed to every ion, which is most of what makes this
-    # bearable.
+    # once here and given to every ion as it is built, which passes it on to
+    # the ion it recombines from.
     if proton_electron_ratio is None:
         proton_electron_ratio = fiasco.proton_electron_ratio(t, **kwargs)
+
+    # Broadcast here, so that a ratio which does not fit the temperature
+    # fails here, rather than as each ion is built below, where a failure is
+    # taken to mean that the ion cannot be computed and the ion is skipped.
+    proton_electron_ratio = _quantity(proton_electron_ratio) * np.ones(t.shape)
 
     wavelength_all = []
     intensity_all = []
@@ -607,11 +665,15 @@ def lines(
     for name in ions:
         try:
             g = contribution_function(
-                ion=fiasco.Ion(name, t, **kwargs),
+                ion=fiasco.Ion(
+                    name,
+                    t,
+                    proton_electron_ratio=proton_electron_ratio,
+                    **kwargs,
+                ),
                 density=density,
                 axis_temperature=axis_temperature,
                 axis=axis,
-                proton_electron_ratio=proton_electron_ratio,
             )
         except Exception:  # pragma: nocover
             # an ion whose atomic model the database cannot complete
