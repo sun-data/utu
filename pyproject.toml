@@ -23,7 +23,7 @@ dependencies = [
     "named-arrays~=2.19",
     "numba",
     "scipy",
-    "fiasco~=0.8.2",
+    "fiasco~=0.9.0",
     "sunpy~=8.0",
 ]
 dynamic = ["version"]
